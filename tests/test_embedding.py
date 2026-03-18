@@ -1,10 +1,14 @@
 """Embedding 引擎测试"""
 
 
-def test_embedding_factory_creates_cpu_fallback():
-    """默认创建 CPU ONNX 引擎"""
-    from npu_webhook.core.embedding import EmbeddingFactory, ONNXEmbedding
+def test_create_embedding_engine_no_model():
+    """模型不存在时返回 None"""
+    from pathlib import Path
+    from npu_webhook.core.embedding import create_embedding_engine
 
-    engine = EmbeddingFactory.create(model_path="dummy")
-    assert isinstance(engine, ONNXEmbedding)
-    assert engine.device == "cpu"
+    engine = create_embedding_engine(
+        model_name="nonexistent-model",
+        device="cpu",
+        data_dir=Path("/tmp/npu-webhook-test-nonexistent"),
+    )
+    assert engine is None

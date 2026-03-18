@@ -1,4 +1,10 @@
-"""SQLite schema + 迁移"""
+"""SQLite 数据库管理 + schema 初始化"""
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 SCHEMA_SQL = """
 -- 知识条目
@@ -16,20 +22,25 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     is_deleted  INTEGER NOT NULL DEFAULT 0
 );
 
--- FTS5 全文索引
+-- FTS5 全文索引（独立表，通过 item_id 关联）
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-    title, content, tokenize='simple'
+    item_id UNINDEXED, title, content
 );
 
 -- Embedding 任务队列
 CREATE TABLE IF NOT EXISTS embedding_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id     TEXT NOT NULL REFERENCES knowledge_items(id),
+    chunk_index INTEGER NOT NULL DEFAULT 0,
+    chunk_text  TEXT NOT NULL DEFAULT '',
     priority    INTEGER NOT NULL DEFAULT 1,
     status      TEXT NOT NULL DEFAULT 'pending',
     attempts    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_eq_status_priority
+    ON embedding_queue(status, priority, created_at);
 
 -- 绑定的本地目录
 CREATE TABLE IF NOT EXISTS bound_directories (
@@ -40,6 +51,16 @@ CREATE TABLE IF NOT EXISTS bound_directories (
     is_active   INTEGER NOT NULL DEFAULT 1,
     last_scan   TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 文件索引记录（用于增量更新）
+CREATE TABLE IF NOT EXISTS indexed_files (
+    id          TEXT PRIMARY KEY,
+    dir_id      TEXT NOT NULL,
+    path        TEXT NOT NULL UNIQUE,
+    file_hash   TEXT NOT NULL,
+    item_id     TEXT,
+    indexed_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- 技能
@@ -73,9 +94,298 @@ CREATE TABLE IF NOT EXISTS optimization_history (
 """
 
 
-class SQLiteDB:
-    """SQLite 数据库管理"""
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
-        # TODO Phase 1: 初始化连接 + 执行 schema
+
+class SQLiteDB:
+    """同步 SQLite 数据库管理"""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = str(db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        self.conn.executescript(SCHEMA_SQL)
+        self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    # === knowledge_items ===
+
+    def insert_item(
+        self,
+        title: str,
+        content: str,
+        source_type: str = "webpage",
+        url: str | None = None,
+        domain: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
+        item_id: str | None = None,
+    ) -> str:
+        item_id = item_id or uuid4().hex
+        now = _now_iso()
+        self.conn.execute(
+            """INSERT INTO knowledge_items
+               (id, title, content, url, source_type, domain, tags, metadata, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                item_id,
+                title,
+                content,
+                url,
+                source_type,
+                domain,
+                json.dumps(tags or [], ensure_ascii=False),
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        # 同步 FTS5
+        self.conn.execute(
+            "INSERT INTO knowledge_fts (item_id, title, content) VALUES (?, ?, ?)",
+            (item_id, title, content),
+        )
+        self.conn.commit()
+        return item_id
+
+    def get_item(self, item_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM knowledge_items WHERE id = ? AND is_deleted = 0", (item_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_items(
+        self,
+        offset: int = 0,
+        limit: int = 20,
+        source_type: str | None = None,
+    ) -> list[dict]:
+        sql = "SELECT * FROM knowledge_items WHERE is_deleted = 0"
+        params: list = []
+        if source_type:
+            sql += " AND source_type = ?"
+            params.append(source_type)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_item(self, item_id: str, **kwargs: str | list | dict) -> bool:
+        sets = []
+        params: list = []
+        for k, v in kwargs.items():
+            if k in ("title", "content", "url", "domain", "source_type"):
+                sets.append(f"{k} = ?")
+                params.append(v)
+            elif k in ("tags", "metadata"):
+                sets.append(f"{k} = ?")
+                params.append(json.dumps(v, ensure_ascii=False))
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.append(_now_iso())
+        params.append(item_id)
+        self.conn.execute(
+            f"UPDATE knowledge_items SET {', '.join(sets)} WHERE id = ?", params
+        )
+        # 同步 FTS5（如果 title 或 content 变了就重建）
+        if any(k in kwargs for k in ("title", "content")):
+            item = self.get_item(item_id)
+            if item:
+                self.conn.execute("DELETE FROM knowledge_fts WHERE item_id = ?", (item_id,))
+                self.conn.execute(
+                    "INSERT INTO knowledge_fts (item_id, title, content) VALUES (?, ?, ?)",
+                    (item_id, item["title"], item["content"]),
+                )
+        self.conn.commit()
+        return True
+
+    def delete_item(self, item_id: str) -> bool:
+        self.conn.execute(
+            "UPDATE knowledge_items SET is_deleted = 1, updated_at = ? WHERE id = ?",
+            (_now_iso(), item_id),
+        )
+        self.conn.execute("DELETE FROM knowledge_fts WHERE item_id = ?", (item_id,))
+        self.conn.commit()
+        return True
+
+    def count_items(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM knowledge_items WHERE is_deleted = 0"
+        ).fetchone()
+        return row[0]
+
+    # === FTS5 搜索 ===
+
+    def fts_search(self, query: str, limit: int = 20) -> list[dict]:
+        """全文搜索，返回匹配的知识条目
+
+        FTS5 unicode61 tokenizer 将 CJK 字符逐字拆分。
+        直接传入的 query 已由 fulltext.build_fts_query 预处理。
+        如果 MATCH 失败则回退到 LIKE 搜索。
+        """
+        try:
+            rows = self.conn.execute(
+                """SELECT ki.*, fts.rank
+                   FROM knowledge_fts fts
+                   JOIN knowledge_items ki ON ki.id = fts.item_id
+                   WHERE knowledge_fts MATCH ? AND ki.is_deleted = 0
+                   ORDER BY fts.rank
+                   LIMIT ?""",
+                (query, limit),
+            ).fetchall()
+            if rows:
+                return [dict(r) for r in rows]
+        except Exception:
+            pass
+
+        # FTS 匹配失败时回退到 LIKE
+        like_q = f"%{query}%"
+        rows = self.conn.execute(
+            """SELECT * FROM knowledge_items
+               WHERE is_deleted = 0 AND (title LIKE ? OR content LIKE ?)
+               ORDER BY created_at DESC LIMIT ?""",
+            (like_q, like_q, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # === embedding_queue ===
+
+    def enqueue_embedding(
+        self,
+        item_id: str,
+        chunk_index: int = 0,
+        chunk_text: str = "",
+        priority: int = 1,
+    ) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO embedding_queue (item_id, chunk_index, chunk_text, priority)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, chunk_index, chunk_text, priority),
+        )
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def dequeue_embeddings(self, batch_size: int = 16) -> list[dict]:
+        """取出一批待处理的 embedding 任务"""
+        rows = self.conn.execute(
+            """SELECT * FROM embedding_queue
+               WHERE status = 'pending'
+               ORDER BY priority ASC, created_at ASC
+               LIMIT ?""",
+            (batch_size,),
+        ).fetchall()
+        if rows:
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" * len(ids))
+            self.conn.execute(
+                f"UPDATE embedding_queue SET status = 'processing' WHERE id IN ({placeholders})",
+                ids,
+            )
+            self.conn.commit()
+        return [dict(r) for r in rows]
+
+    def complete_embedding(self, queue_id: int) -> None:
+        self.conn.execute(
+            "UPDATE embedding_queue SET status = 'done' WHERE id = ?", (queue_id,)
+        )
+        self.conn.commit()
+
+    def fail_embedding(self, queue_id: int) -> None:
+        self.conn.execute(
+            "UPDATE embedding_queue SET status = 'failed', attempts = attempts + 1 WHERE id = ?",
+            (queue_id,),
+        )
+        self.conn.commit()
+
+    def pending_embedding_count(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM embedding_queue WHERE status = 'pending'"
+        ).fetchone()
+        return row[0]
+
+    # === bound_directories ===
+
+    def bind_directory(
+        self,
+        path: str,
+        recursive: bool = True,
+        file_types: list[str] | None = None,
+    ) -> str:
+        dir_id = uuid4().hex
+        self.conn.execute(
+            """INSERT INTO bound_directories (id, path, recursive, file_types)
+               VALUES (?, ?, ?, ?)""",
+            (
+                dir_id,
+                path,
+                int(recursive),
+                json.dumps(file_types or ["md", "txt", "pdf", "docx", "py", "js"]),
+            ),
+        )
+        self.conn.commit()
+        return dir_id
+
+    def unbind_directory(self, dir_id: str) -> bool:
+        self.conn.execute("DELETE FROM bound_directories WHERE id = ?", (dir_id,))
+        self.conn.commit()
+        return True
+
+    def list_directories(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM bound_directories WHERE is_active = 1"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_directory_scan(self, dir_id: str) -> None:
+        self.conn.execute(
+            "UPDATE bound_directories SET last_scan = ? WHERE id = ?",
+            (_now_iso(), dir_id),
+        )
+        self.conn.commit()
+
+    # === indexed_files ===
+
+    def get_indexed_file(self, path: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM indexed_files WHERE path = ?", (path,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_indexed_file(
+        self, dir_id: str, path: str, file_hash: str, item_id: str
+    ) -> None:
+        file_id = uuid4().hex
+        self.conn.execute(
+            """INSERT INTO indexed_files (id, dir_id, path, file_hash, item_id)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+               file_hash = excluded.file_hash,
+               item_id = excluded.item_id,
+               indexed_at = datetime('now')""",
+            (file_id, dir_id, path, file_hash, item_id),
+        )
+        self.conn.commit()
+
+    # === app_config ===
+
+    def get_config(self, key: str, default: str = "") -> str:
+        row = self.conn.execute(
+            "SELECT value FROM app_config WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else default
+
+    def set_config(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+            (key, value, value),
+        )
+        self.conn.commit()
