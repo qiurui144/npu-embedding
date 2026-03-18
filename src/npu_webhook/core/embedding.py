@@ -1,4 +1,4 @@
-"""Embedding 引擎：ONNX Runtime CPU 加载 bge-small-zh-v1.5"""
+"""Embedding 引擎：ONNX Runtime / Ollama 加载 embedding 模型"""
 
 import logging
 from abc import ABC, abstractmethod
@@ -83,6 +83,51 @@ class ONNXEmbedding(EmbeddingEngine):
         return self._dimension
 
 
+class OllamaEmbedding(EmbeddingEngine):
+    """Ollama Embedding（通过 HTTP API 调用本地 Ollama 服务）"""
+
+    def __init__(self, model: str = "bge-m3", base_url: str = "http://localhost:11434") -> None:
+        import urllib.request
+        import json
+
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+        # 探测维度：发送一次单文本 embedding
+        try:
+            data = json.dumps({"model": model, "input": "dim probe"}).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/api/embed",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+            self._dimension = len(result["embeddings"][0])
+        except Exception as e:
+            raise ConnectionError(f"Ollama embedding probe failed ({self.base_url}): {e}") from e
+
+        logger.info("Ollama embedding ready: %s (dim=%d, url=%s)", model, self._dimension, self.base_url)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        import urllib.request
+        import json
+
+        data = json.dumps({"model": self.model, "input": texts}).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embed",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read())
+
+        return result["embeddings"]
+
+    def get_dimension(self) -> int:
+        return self._dimension
+
+
 class OpenVINOEmbedding(EmbeddingEngine):
     """OpenVINO Embedding（Intel NPU/iGPU/CPU）- Phase 4 实现"""
 
@@ -111,12 +156,29 @@ def _find_model_dir(model_name: str, data_dir: Path) -> Path | None:
 
 
 def create_embedding_engine(
-    model_name: str = "bge-small-zh-v1.5",
+    model_name: str = "bge-m3",
     device: str = "auto",
     data_dir: Path | None = None,
     max_length: int = 512,
 ) -> EmbeddingEngine | None:
-    """工厂函数：根据硬件和模型可用性创建 embedding 引擎"""
+    """工厂函数：根据硬件和模型可用性创建 embedding 引擎
+
+    device 取值:
+      - ollama: 使用 Ollama HTTP API
+      - cpu/directml/rocm: 使用本地 ONNX Runtime
+      - auto: 优先 Ollama，回退 ONNX
+    """
+    # Ollama 模式
+    if device == "ollama" or device == "auto":
+        try:
+            return OllamaEmbedding(model=model_name)
+        except Exception as e:
+            if device == "ollama":
+                logger.error("Ollama embedding failed: %s", e)
+                return None
+            logger.info("Ollama not available, falling back to ONNX: %s", e)
+
+    # ONNX 模式
     if data_dir is None:
         from npu_webhook.config import settings
         data_dir = settings.data_dir
@@ -127,9 +189,7 @@ def create_embedding_engine(
         return None
 
     actual_device = "cpu"
-    if device == "auto":
-        actual_device = "cpu"  # Phase 4: 自动检测 NPU/GPU
-    elif device in ("cpu", "directml", "rocm"):
+    if device in ("cpu", "directml", "rocm"):
         actual_device = device
 
     return ONNXEmbedding(model_dir, device=actual_device, max_length=max_length)

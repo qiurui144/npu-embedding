@@ -14,8 +14,8 @@ class ServerConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    model: str = "bge-small-zh-v1.5"
-    device: str = "auto"  # auto/cpu/npu/gpu
+    model: str = "bge-m3"
+    device: str = "auto"  # auto/ollama/cpu/npu/gpu
     batch_size: int = 16
     max_length: int = 512
 

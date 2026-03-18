@@ -1,0 +1,66 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; color: #1f2937; background: #fff; }
+
+.sp-container { display: flex; flex-direction: column; height: 100vh; }
+
+/* Tab 导航 */
+.sp-tabs { display: flex; border-bottom: 1px solid #e5e7eb; flex-shrink: 0; }
+.sp-tab {
+  flex: 1; padding: 10px 0; text-align: center; cursor: pointer;
+  border: none; background: none; font-size: 13px; color: #6b7280;
+  border-bottom: 2px solid transparent; transition: all .2s;
+}
+.sp-tab:hover { color: #4f46e5; }
+.sp-tab--active { color: #4f46e5; border-bottom-color: #4f46e5; font-weight: 600; }
+
+/* 页面内容区 */
+.sp-page { flex: 1; overflow-y: auto; padding: 12px; }
+
+/* 通用搜索框 */
+.sp-search { display: flex; gap: 6px; margin-bottom: 12px; }
+.sp-search input {
+  flex: 1; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none;
+}
+.sp-search input:focus { border-color: #4f46e5; }
+.sp-search select { padding: 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.sp-search button {
+  padding: 6px 14px; border: none; border-radius: 6px; background: #4f46e5; color: #fff;
+  cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+
+/* 结果卡片 */
+.sp-card {
+  padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 8px;
+  cursor: pointer; transition: border-color .2s;
+}
+.sp-card:hover { border-color: #4f46e5; }
+.sp-card__title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+.sp-card__meta { display: flex; gap: 8px; font-size: 11px; color: #9ca3af; margin-bottom: 4px; }
+.sp-card__content { font-size: 12px; color: #4b5563; line-height: 1.5; white-space: pre-wrap; }
+.sp-card__actions { display: flex; gap: 6px; margin-top: 6px; }
+.sp-card__actions button {
+  padding: 2px 8px; border: 1px solid #d1d5db; border-radius: 4px;
+  background: #fff; cursor: pointer; font-size: 11px; color: #6b7280;
+}
+.sp-card__actions button:hover { border-color: #ef4444; color: #ef4444; }
+
+/* 日期分组 */
+.sp-date-group { font-size: 12px; font-weight: 600; color: #6b7280; margin: 12px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #f3f4f6; }
+
+/* 状态页 */
+.sp-status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sp-status-item { padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; }
+.sp-status-item__label { font-size: 11px; color: #9ca3af; }
+.sp-status-item__value { font-size: 16px; font-weight: 700; color: #4f46e5; }
+
+/* 空状态 */
+.sp-empty { text-align: center; padding: 40px 16px; color: #9ca3af; }
+
+/* 加载中 */
+.sp-loading { text-align: center; padding: 20px; color: #9ca3af; }
+
+/* 刷新按钮 */
+.sp-refresh {
+  display: block; margin: 12px auto; padding: 6px 16px; border: 1px solid #d1d5db;
+  border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px;
+}

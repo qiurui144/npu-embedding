@@ -20,8 +20,9 @@ def test_detect_best_device():
     from npu_webhook.platform.detector import detect_best_device
 
     device = detect_best_device()
-    assert device.device_type == "cpu"
-    assert device.vendor == "generic"
+    # 根据环境不同，可能是 ollama/igpu/cpu 等
+    assert device.device_type in ("cpu", "npu", "igpu", "ollama")
+    assert device.vendor in ("generic", "intel", "amd", "ollama")
 
 
 def test_data_dir_exists():

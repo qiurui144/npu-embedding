@@ -9,6 +9,17 @@ export class API {
     this.baseUrl = baseUrl;
   }
 
+  /** 从 chrome.storage 重新加载 baseUrl */
+  async reloadBaseUrl() {
+    try {
+      const result = await chrome.storage.local.get('settings');
+      const settings = result.settings;
+      if (settings?.backendUrl) {
+        this.baseUrl = settings.backendUrl.replace(/\/+$/, '') + '/api/v1';
+      }
+    } catch { /* content script 环境可能无权限 */ }
+  }
+
   async request(path, options = {}) {
     const resp = await fetch(`${this.baseUrl}${path}`, {
       headers: { 'Content-Type': 'application/json', ...options.headers },
@@ -18,10 +29,48 @@ export class API {
     return resp.json();
   }
 
+  // --- 基础 ---
   health() { return this.request('/status/health'); }
+  status() { return this.request('/status'); }
+
+  // --- 知识注入 ---
   ingest(data) { return this.request('/ingest', { method: 'POST', body: JSON.stringify(data) }); }
-  search(query) { return this.request(`/search?q=${encodeURIComponent(query)}`); }
-  searchRelevant(data) { return this.request('/search/relevant', { method: 'POST', body: JSON.stringify(data) }); }
+
+  // --- 搜索 ---
+  search(query, { topK = 10, sourceTypes } = {}) {
+    let url = `/search?q=${encodeURIComponent(query)}&top_k=${topK}`;
+    if (sourceTypes) url += `&source_types=${encodeURIComponent(sourceTypes)}`;
+    return this.request(url);
+  }
+
+  searchRelevant(data) {
+    return this.request('/search/relevant', { method: 'POST', body: JSON.stringify(data) });
+  }
+
+  // --- 条目 CRUD ---
+  items({ offset = 0, limit = 20, sourceType } = {}) {
+    let url = `/items?offset=${offset}&limit=${limit}`;
+    if (sourceType) url += `&source_type=${encodeURIComponent(sourceType)}`;
+    return this.request(url);
+  }
+
+  getItem(id) { return this.request(`/items/${id}`); }
+
+  deleteItem(id) { return this.request(`/items/${id}`, { method: 'DELETE' }); }
+
+  updateItem(id, data) {
+    return this.request(`/items/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+  }
+
+  // --- 设置 ---
+  getSettings() { return this.request('/settings'); }
+
+  updateSettings(data) {
+    return this.request('/settings', { method: 'PATCH', body: JSON.stringify(data) });
+  }
+
+  // --- 索引 ---
+  indexStatus() { return this.request('/index/status'); }
 }
 
 export const api = new API();
