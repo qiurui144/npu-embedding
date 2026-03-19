@@ -62,5 +62,11 @@ class ChromaDB:
     def delete(self, doc_ids: list[str]) -> None:
         self.collection.delete(ids=doc_ids)
 
+    def delete_by_item_ids(self, item_ids: list[str]) -> None:
+        """按 item_id 元数据删除所有 chunk（支持多分块条目）"""
+        if not item_ids:
+            return
+        self.collection.delete(where={"item_id": {"$in": item_ids}})
+
     def count(self) -> int:
         return self.collection.count()

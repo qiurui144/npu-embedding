@@ -80,9 +80,9 @@ async def delete_item(item_id: str) -> dict:
     if not state.db.get_item(item_id):
         raise HTTPException(status_code=404, detail="Item not found")
     state.db.delete_item(item_id)
-    # 也从向量库中删除
+    # 删除所有关联 chunk（item 可能有多个分块向量）
     if state.vector_store:
-        state.vector_store.delete([f"{item_id}:0"])
+        state.vector_store.delete_by_item_ids([item_id])
     return {"status": "ok"}
 
 

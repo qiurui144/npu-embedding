@@ -57,12 +57,11 @@ class KnowledgeCleaner:
             chat_unused_days=30,
         )
 
-        # 同步删除向量库中的对应向量（每个 item 可能有多个 chunk）
+        # 删除所有关联向量（每个 item 可能有多个分块向量，用元数据过滤确保全部清理）
         if archived_ids and self.vector_store.available:
-            vec_ids = [f"{item_id}:0" for item_id in archived_ids]
             try:
-                self.vector_store.delete(vec_ids)
-                logger.debug("Deleted %d vectors for archived items", len(vec_ids))
+                self.vector_store.delete_by_item_ids(archived_ids)
+                logger.debug("Deleted vectors for %d archived items", len(archived_ids))
             except Exception:
                 logger.warning("Failed to delete vectors for archived items", exc_info=True)
 

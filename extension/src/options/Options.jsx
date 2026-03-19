@@ -1,6 +1,7 @@
 import { h, render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { getSettings, saveSettings } from '../shared/storage.js';
+import { MSG, sendToWorker } from '../shared/messages.js';
 
 const styles = {
   page: { padding: '24px', maxWidth: '600px', margin: '0 auto', fontFamily: 'system-ui, sans-serif' },
@@ -39,6 +40,7 @@ function Options() {
   const [injectionMode, setInjectionMode] = useState('auto');
   const [excludedDomains, setExcludedDomains] = useState('');
   const [toast, setToast] = useState(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -48,27 +50,52 @@ function Options() {
     });
   }, []);
 
+  const isValidUrl = (url) => {
+    try { return /^https?:\/\/.+/.test(new URL(url).href); } catch { return false; }
+  };
+
   const save = async () => {
+    const trimmed = backendUrl.replace(/\/+$/, '');
+    if (!isValidUrl(trimmed)) {
+      setToast({ ok: false, msg: '地址格式不正确，应为 http(s)://host:port' });
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
     const settings = {
-      backendUrl: backendUrl.replace(/\/+$/, ''),
+      backendUrl: trimmed,
       injectionMode,
       excludedDomains: excludedDomains.split('\n').map((d) => d.trim()).filter(Boolean),
     };
     await saveSettings(settings);
+    // 通知 worker 立即重载 baseUrl，无需等 30s 健康检查
+    sendToWorker(MSG.SETTINGS_UPDATED).catch(() => {});
     setToast({ ok: true, msg: '设置已保存' });
     setTimeout(() => setToast(null), 2000);
   };
 
   const testConnection = async () => {
+    const trimmed = backendUrl.replace(/\/+$/, '');
+    if (!isValidUrl(trimmed)) {
+      setToast({ ok: false, msg: '地址格式不正确，应为 http(s)://host:port' });
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+    setTesting(true);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 5000);
     try {
-      const resp = await fetch(`${backendUrl.replace(/\/+$/, '')}/api/v1/status/health`);
+      const resp = await fetch(`${trimmed}/api/v1/status/health`, { signal: ac.signal });
       if (resp.ok) {
         setToast({ ok: true, msg: '连接成功' });
       } else {
         setToast({ ok: false, msg: `连接失败: HTTP ${resp.status}` });
       }
     } catch (e) {
-      setToast({ ok: false, msg: `连接失败: ${e.message}` });
+      const msg = e.name === 'AbortError' ? '连接超时（5s）' : `连接失败: ${e.message}`;
+      setToast({ ok: false, msg });
+    } finally {
+      clearTimeout(timer);
+      setTesting(false);
     }
     setTimeout(() => setToast(null), 3000);
   };
@@ -115,7 +142,9 @@ function Options() {
 
       <div style={styles.btnRow}>
         <button style={styles.btn} onClick={save}>保存</button>
-        <button style={styles.btnSecondary} onClick={testConnection}>测试连接</button>
+        <button style={{ ...styles.btnSecondary, opacity: testing ? 0.6 : 1 }} onClick={testConnection} disabled={testing}>
+          {testing ? '测试中…' : '测试连接'}
+        </button>
       </div>
 
       {toast && <div style={styles.toast(toast.ok)}>{toast.msg}</div>}

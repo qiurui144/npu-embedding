@@ -45,7 +45,10 @@ class EmbeddingQueueWorker:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=10)
-            logger.info("Embedding queue worker stopped")
+            if self._thread.is_alive():
+                logger.warning("Embedding queue worker did not stop within 10s")
+            else:
+                logger.info("Embedding queue worker stopped")
 
     def _run(self) -> None:
         while not self._stop_event.is_set():

@@ -77,3 +77,7 @@ class VectorStore:
 
     def delete(self, doc_ids: list[str]) -> None:
         self.chroma.delete(doc_ids)
+
+    def delete_by_item_ids(self, item_ids: list[str]) -> None:
+        """按 item_id 删除所有关联 chunk（修复多分块孤立向量问题）"""
+        self.chroma.delete_by_item_ids(item_ids)

@@ -52,7 +52,10 @@ export const ADAPTERS = {
     },
 
     setInputContent(element, text) {
-      element.innerHTML = `<p>${text}</p>`;
+      // 用 textContent 构建 p 元素（自动转义特殊字符），避免 XSS
+      const p = document.createElement('p');
+      p.textContent = text;
+      element.replaceChildren(p);
       element.dispatchEvent(new Event('input', { bubbles: true }));
     },
   },
@@ -80,7 +83,9 @@ export const ADAPTERS = {
     },
 
     setInputContent(element, text) {
-      element.innerHTML = `<p>${text}</p>`;
+      const p = document.createElement('p');
+      p.textContent = text;
+      element.replaceChildren(p);
       element.dispatchEvent(new Event('input', { bubbles: true }));
     },
   },

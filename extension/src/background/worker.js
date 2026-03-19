@@ -160,6 +160,12 @@ async function handleMessage(msg, sender) {
       return { ok: true };
     }
 
+    case MSG.SETTINGS_UPDATED: {
+      // 立即重载 baseUrl，无需等下一次健康检查
+      await api.reloadBaseUrl();
+      return { ok: true };
+    }
+
     case MSG.OPEN_SIDEPANEL:
       if (sender.tab) {
         await chrome.sidePanel.open({ tabId: sender.tab.id });
@@ -214,12 +220,16 @@ async function handleSummarizeAndSave(data) {
     console.warn('[npu-webhook] Summarize failed, saving full text:', err);
   }
 
-  // 保存：摘要 + 全文
+  // 保存：摘要成功时附带摘要，失败时仅保存全文，更新 has_summary 标记
   const saveData = {
     ...data,
     content: summary
       ? `[摘要]\n${summary}\n\n[原文]\n${data.content}`
       : data.content,
+    metadata: {
+      ...(data.metadata || {}),
+      has_summary: summary ? 'true' : 'false', // 准确反映实际状态
+    },
   };
 
   dedup.set(hash, Date.now());
