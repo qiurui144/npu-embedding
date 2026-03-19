@@ -259,10 +259,16 @@ class SQLiteDB:
         self.conn.commit()
         return True
 
-    def count_items(self) -> int:
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM knowledge_items WHERE is_deleted = 0"
-        ).fetchone()
+    def count_items(self, source_type: str | None = None) -> int:
+        if source_type:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM knowledge_items WHERE is_deleted = 0 AND source_type = ?",
+                (source_type,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM knowledge_items WHERE is_deleted = 0"
+            ).fetchone()
         return row[0]
 
     # === FTS5 搜索 ===

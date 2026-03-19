@@ -208,11 +208,13 @@ async function handleCapture(data) {
 async function handleSummarizeAndSave(data) {
   if (!data?.content) return { error: 'No content' };
 
-  // 先去重
+  // 先占坑：避免 await ollamaSummarize 期间并发请求绕过去重
   const hash = djb2(data.content);
   if (dedup.has(hash)) return { status: 'duplicate' };
+  dedup.set(hash, Date.now());
+  persistDedup();
 
-  // 用 Ollama 生成摘要
+  // 用 Ollama 生成摘要（失败时回退到全文，不影响入库）
   let summary = null;
   try {
     summary = await ollamaSummarize(data.content);
@@ -231,9 +233,6 @@ async function handleSummarizeAndSave(data) {
       has_summary: summary ? 'true' : 'false', // 准确反映实际状态
     },
   };
-
-  dedup.set(hash, Date.now());
-  persistDedup();
 
   try {
     const result = await api.ingest(saveData);

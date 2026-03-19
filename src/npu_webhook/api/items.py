@@ -34,7 +34,7 @@ async def list_items(
     if not state.db:
         raise HTTPException(status_code=503, detail="Database not initialized")
     rows = state.db.list_items(offset=offset, limit=limit, source_type=source_type)
-    total = state.db.count_items()
+    total = state.db.count_items(source_type=source_type)
     return ItemListResponse(
         items=[_row_to_item(r) for r in rows],
         total=total,
