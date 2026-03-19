@@ -370,6 +370,15 @@ class SQLiteDB:
         ).fetchone()
         return row[0]
 
+    def cancel_embeddings_for_item(self, item_id: str) -> int:
+        """取消某 item 的所有待处理 embedding 任务，防止删除后 worker 重写幽灵向量"""
+        cur = self.conn.execute(
+            "UPDATE embedding_queue SET status = 'abandoned' WHERE item_id = ? AND status IN ('pending', 'processing')",
+            (item_id,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     # === bound_directories ===
 
     def bind_directory(

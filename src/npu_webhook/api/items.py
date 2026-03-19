@@ -95,6 +95,8 @@ async def delete_item(item_id: str) -> dict:
         raise HTTPException(status_code=503, detail="Database not initialized")
     if not state.db.get_item(item_id):
         raise HTTPException(status_code=404, detail="Item not found")
+    # 先取消 pending/processing 任务，避免 worker 在向量删除后重写幽灵向量
+    state.db.cancel_embeddings_for_item(item_id)
     state.db.delete_item(item_id)
     # 删除所有关联 chunk（item 可能有多个分块向量）
     if state.vector_store:
