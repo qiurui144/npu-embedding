@@ -175,7 +175,8 @@ async def auth_middleware(request: Request, call_next):  # type: ignore[no-untyp
     client_host = request.client.host if request.client else "unknown"
     if client_host not in ("127.0.0.1", "::1", "localhost") and settings.auth.mode == "token":
         token = request.headers.get("X-API-Token", "")
-        if token != settings.auth.token:
+        # 未配置 token 时 fail-closed（空 token == 误配置，拒绝所有非 localhost 请求）
+        if not settings.auth.token or token != settings.auth.token:
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 

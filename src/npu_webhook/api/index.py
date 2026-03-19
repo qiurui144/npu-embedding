@@ -2,6 +2,7 @@
 
 import json
 import threading
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -15,8 +16,6 @@ router = APIRouter(prefix="/api/v1", tags=["index"])
 async def bind_directory(req: BindDirectoryRequest) -> dict:
     if not state.db:
         raise HTTPException(status_code=503, detail="Database not initialized")
-
-    from pathlib import Path
 
     if not Path(req.path).is_dir():
         raise HTTPException(status_code=400, detail="Directory does not exist")
