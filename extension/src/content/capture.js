@@ -1,5 +1,5 @@
 /**
- * 对话捕获 — MutationObserver 监听 AI 回答，配对后推送到 Worker
+ * 对话捕获 — MutationObserver 监听 AI 回答，配对后推送摘要到 Worker
  */
 
 import { MSG, sendToWorker } from '../shared/messages.js';
@@ -25,12 +25,10 @@ export class ConversationCapture {
   start() {
     const container = document.querySelector(this.adapter.messagesContainer);
     if (!container) {
-      // 容器还没出现，延迟重试
       setTimeout(() => this.start(), 2000);
       return;
     }
 
-    // 扫描已有消息不捕获，只标记已见
     this._markExisting();
 
     this._observer = new MutationObserver((mutations) => {
@@ -66,18 +64,15 @@ export class ConversationCapture {
   }
 
   _handleNode(node) {
-    // 查找消息节点（可能是子节点触发）
     const msgNode = node.matches?.(this.adapter.messages) ? node : node.querySelector?.(this.adapter.messages);
     if (!msgNode) return;
 
-    // 流式输出 debounce
     if (this._debounceTimer) clearTimeout(this._debounceTimer);
     this._debounceTimer = setTimeout(() => this._processNode(msgNode), 2000);
   }
 
   _processNode(node) {
     if (!this.adapter.isComplete(node)) {
-      // 还没完成，继续等
       this._debounceTimer = setTimeout(() => this._processNode(node), 1000);
       return;
     }
@@ -99,7 +94,18 @@ export class ConversationCapture {
 
   _sendPair(user, assistant) {
     const title = user.content.slice(0, 100);
-    const content = `用户: ${user.content}\n\n助手: ${assistant.content}`;
+    const fullContent = `用户: ${user.content}\n\n助手: ${assistant.content}`;
+
+    // 短对话直接入库，长对话请求摘要后入库
+    if (fullContent.length < 500) {
+      this._directSave(title, fullContent);
+    } else {
+      this._summarizeAndSave(title, fullContent);
+    }
+  }
+
+  /** 短对话直接入库 */
+  _directSave(title, content) {
     const data = {
       title,
       content,
@@ -111,6 +117,24 @@ export class ConversationCapture {
 
     sendToWorker(MSG.CAPTURE_CONVERSATION, { data }).catch((err) => {
       console.warn('[npu-webhook] Capture send failed:', err);
+    });
+  }
+
+  /** 长对话请求 Ollama 摘要后入库 */
+  _summarizeAndSave(title, fullContent) {
+    const data = {
+      title,
+      content: fullContent,
+      source_type: 'ai_chat',
+      url: location.href,
+      domain: location.hostname,
+      metadata: { platform: this.adapter.name || 'unknown', has_summary: 'true' },
+    };
+
+    sendToWorker(MSG.SUMMARIZE_AND_SAVE, { data }).catch((err) => {
+      // 摘要失败时回退到直接保存全文
+      console.warn('[npu-webhook] Summarize failed, saving full text:', err);
+      this._directSave(title, fullContent);
     });
   }
 }

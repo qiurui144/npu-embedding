@@ -12,6 +12,9 @@ export const MSG = {
   GET_SETTINGS: 'GET_SETTINGS',
   OPEN_SIDEPANEL: 'OPEN_SIDEPANEL',
   SETTINGS_UPDATED: 'SETTINGS_UPDATED',
+  // Phase 2.5 新增
+  SAVE_SELECTION: 'SAVE_SELECTION',      // 右键选中文本入库
+  SUMMARIZE_AND_SAVE: 'SUMMARIZE_AND_SAVE', // 对话摘要后入库
 };
 
 /** 发消息到 Background Worker */

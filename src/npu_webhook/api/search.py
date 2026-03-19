@@ -40,12 +40,20 @@ async def search(
 
 @router.post("/search/relevant", response_model=SearchResponse)
 async def search_relevant(req: RelevantRequest) -> SearchResponse:
-    """获取注入用相关知识（Content Script 调用）"""
+    """获取注入用相关知识（Content Script 调用）
+
+    支持：上下文感知搜索 + 阈值过滤 + Reranker 精排
+    """
     if not state.search_engine:
         raise HTTPException(status_code=503, detail="Search engine not initialized")
 
     results = state.search_engine.search(
-        req.query, top_k=req.top_k, source_types=req.source_types
+        req.query,
+        top_k=req.top_k,
+        source_types=req.source_types,
+        context=req.context,
+        min_score=req.min_score,
+        rerank=True,  # 注入场景始终启用 rerank
     )
 
     return SearchResponse(
