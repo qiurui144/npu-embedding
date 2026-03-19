@@ -55,6 +55,7 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     results: list[SearchResult]
     total: int
+    feedback_ids: list[int] = []  # 注入反馈 ID（用于后续提交有用/无用反馈）
 
 
 class KnowledgeItem(BaseModel):

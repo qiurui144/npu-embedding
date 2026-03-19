@@ -199,23 +199,25 @@ class HybridSearchEngine:
                 item_data[item_id].setdefault("url", r.get("url"))
                 item_data[item_id].setdefault("created_at", r.get("created_at"))
 
-        # 按 RRF 分数排序
+        # 从 DB 补全信息 + quality_score 加权
+        for item_id in scores:
+            db_item = self.db.get_item(item_id)
+            if db_item:
+                if item_id not in item_data:
+                    item_data[item_id] = {"id": item_id}
+                item_data[item_id].setdefault("title", db_item["title"])
+                item_data[item_id].setdefault("url", db_item.get("url"))
+                item_data[item_id].setdefault("source_type", db_item["source_type"])
+                item_data[item_id].setdefault("created_at", db_item["created_at"])
+                # quality_score 加权: 高质量条目获得最多 20% 的分数 bonus
+                quality = db_item.get("quality_score") or 1.0
+                scores[item_id] *= (0.8 + 0.2 * quality)
+
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_k]
 
         results = []
         for item_id in sorted_ids:
-            data = item_data[item_id]
-            # 尝试从数据库补全信息
-            if "title" not in data or not data.get("title"):
-                db_item = self.db.get_item(item_id)
-                if db_item:
-                    data.update({
-                        "title": db_item["title"],
-                        "url": db_item.get("url"),
-                        "source_type": db_item["source_type"],
-                        "created_at": db_item["created_at"],
-                    })
-
+            data = item_data.get(item_id, {"id": item_id})
             data["score"] = scores[item_id]
             results.append(data)
 

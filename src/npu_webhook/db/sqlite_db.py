@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 注入反馈追踪
+CREATE TABLE IF NOT EXISTS injection_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     TEXT NOT NULL REFERENCES knowledge_items(id),
+    query       TEXT NOT NULL,
+    was_useful  INTEGER,  -- 1=有用, 0=无用, NULL=未反馈
+    injected_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_if_item ON injection_feedback(item_id);
+
 -- 系统配置 KV
 CREATE TABLE IF NOT EXISTS app_config (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -111,6 +122,16 @@ class SQLiteDB:
 
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_SQL)
+        # 增量 schema 迁移（兼容旧数据库）
+        for col, default in [
+            ("quality_score", "1.0"),
+            ("last_used_at", "NULL"),
+            ("use_count", "0"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE knowledge_items ADD COLUMN {col} REAL DEFAULT {default}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         self.conn.commit()
 
     def close(self) -> None:
@@ -389,3 +410,103 @@ class SQLiteDB:
             (key, value, value),
         )
         self.conn.commit()
+
+    # === injection_feedback ===
+
+    def record_injection(self, item_id: str, query: str) -> int:
+        """记录一次注入事件，同时更新条目使用统计"""
+        now = _now_iso()
+        cur = self.conn.execute(
+            "INSERT INTO injection_feedback (item_id, query, injected_at) VALUES (?, ?, ?)",
+            (item_id, query, now),
+        )
+        self.conn.execute(
+            "UPDATE knowledge_items SET use_count = use_count + 1, last_used_at = ? WHERE id = ?",
+            (now, item_id),
+        )
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def update_feedback(self, feedback_id: int, was_useful: bool) -> None:
+        """更新注入反馈（有用/无用）"""
+        self.conn.execute(
+            "UPDATE injection_feedback SET was_useful = ? WHERE id = ?",
+            (1 if was_useful else 0, feedback_id),
+        )
+        # 更新条目质量分数
+        row = self.conn.execute(
+            "SELECT item_id FROM injection_feedback WHERE id = ?", (feedback_id,)
+        ).fetchone()
+        if row:
+            self._recalc_quality(row[0])
+        self.conn.commit()
+
+    def _recalc_quality(self, item_id: str) -> None:
+        """重新计算条目质量分数: useful_rate * log(use_count+1)"""
+        import math
+        row = self.conn.execute(
+            """SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN was_useful = 1 THEN 1 ELSE 0 END) as useful,
+                SUM(CASE WHEN was_useful = 0 THEN 1 ELSE 0 END) as useless
+            FROM injection_feedback WHERE item_id = ?""",
+            (item_id,),
+        ).fetchone()
+        total, useful, useless = row[0], row[1] or 0, row[2] or 0
+        if total == 0:
+            return
+        rated = useful + useless
+        if rated == 0:
+            score = 1.0  # 无反馈时保持默认
+        else:
+            useful_rate = useful / rated
+            score = useful_rate * math.log(rated + 1) / math.log(11)  # 归一化到 0~1
+        self.conn.execute(
+            "UPDATE knowledge_items SET quality_score = ? WHERE id = ?",
+            (round(score, 3), item_id),
+        )
+
+    def list_stale_items(self, days: int = 30, min_use: int = 0, limit: int = 50) -> list[dict]:
+        """查找过期/冷知识条目
+
+        条件：
+        - 超过 N 天未被使用
+        - 使用次数低于阈值
+        - 质量分数低于 0.3
+        """
+        cutoff = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        rows = self.conn.execute(
+            """SELECT * FROM knowledge_items
+               WHERE is_deleted = 0
+               AND (
+                   (last_used_at IS NULL AND julianday(?) - julianday(created_at) > ?)
+                   OR (last_used_at IS NOT NULL AND julianday(?) - julianday(last_used_at) > ?)
+                   OR quality_score < 0.3
+               )
+               AND use_count <= ?
+               ORDER BY quality_score ASC, created_at ASC
+               LIMIT ?""",
+            (cutoff, days, cutoff, days, min_use, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_item_stats(self, item_id: str) -> dict:
+        """获取条目的使用统计"""
+        item = self.get_item(item_id)
+        if not item:
+            return {}
+        feedback = self.conn.execute(
+            """SELECT COUNT(*) as total,
+                SUM(CASE WHEN was_useful = 1 THEN 1 ELSE 0 END) as useful,
+                SUM(CASE WHEN was_useful = 0 THEN 1 ELSE 0 END) as useless
+            FROM injection_feedback WHERE item_id = ?""",
+            (item_id,),
+        ).fetchone()
+        return {
+            "use_count": item.get("use_count", 0),
+            "quality_score": item.get("quality_score", 1.0),
+            "last_used_at": item.get("last_used_at"),
+            "feedback_total": feedback[0],
+            "feedback_useful": feedback[1] or 0,
+            "feedback_useless": feedback[2] or 0,
+        }
