@@ -1,5 +1,6 @@
 """/index - 本地目录绑定"""
 
+import json
 import threading
 
 from fastapi import APIRouter, HTTPException
@@ -32,9 +33,12 @@ async def bind_directory(req: BindDirectoryRequest) -> dict:
 
     # 后台扫描
     if state.pipeline:
-        dir_info = {"id": dir_id, "path": req.path, "recursive": req.recursive, "file_types": str(req.file_types)}
-        import json
-        dir_info["file_types"] = json.dumps(req.file_types)
+        dir_info = {
+            "id": dir_id,
+            "path": req.path,
+            "recursive": req.recursive,
+            "file_types": json.dumps(req.file_types),
+        }
         threading.Thread(target=state.pipeline.scan_directory, args=(dir_info,), daemon=True).start()
 
     return {"status": "ok", "id": dir_id}

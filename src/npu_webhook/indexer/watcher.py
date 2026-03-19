@@ -15,7 +15,7 @@ class FileChangeHandler(FileSystemEventHandler):
 
     def __init__(self, callback: callable, file_types: list[str]) -> None:  # type: ignore[type-arg]
         self.callback = callback
-        self.suffixes = {f".{ft}" for ft in file_types}
+        self.suffixes = {f".{ft.lower().lstrip('.')}" for ft in file_types}
 
     def _should_process(self, path: str) -> bool:
         return Path(path).suffix.lower() in self.suffixes

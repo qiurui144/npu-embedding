@@ -12,6 +12,7 @@ export default function TimelinePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [deletingIds, setDeletingIds] = useState(new Set());
+  const [backendUrl, setBackendUrl] = useState('http://localhost:18900');
 
   const load = async (newOffset = 0) => {
     if (newOffset === 0) {
@@ -37,7 +38,12 @@ export default function TimelinePage() {
     setLoadingMore(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    sendToWorker(MSG.GET_SETTINGS).then((s) => {
+      if (s?.backendUrl) setBackendUrl(s.backendUrl.replace(/\/+$/, ''));
+    }).catch(() => {});
+    load();
+  }, []);
 
   const deleteItem = async (id, e) => {
     e.stopPropagation();
@@ -45,8 +51,7 @@ export default function TimelinePage() {
 
     setDeletingIds((prev) => new Set([...prev, id]));
     try {
-      const settings = await sendToWorker(MSG.GET_SETTINGS);
-      const baseUrl = (settings?.backendUrl || 'http://localhost:18900').replace(/\/+$/, '');
+      const baseUrl = backendUrl;
       const resp = await fetch(`${baseUrl}/api/v1/items/${id}`, { method: 'DELETE' });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       // 删除成功后再更新 UI（非乐观更新，避免误删）
