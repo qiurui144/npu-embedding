@@ -68,26 +68,28 @@ class EmbeddingQueueWorker:
         metadatas = []
         task_ids = []
 
+        # 批量预加载 item 元数据，避免循环中 N+1 查询
+        unique_ids = list({t["item_id"] for t in tasks})
+        items_map = {row["id"]: row for row in self.db.get_items_batch(unique_ids)}
+
         for task in tasks:
             item_id = task["item_id"]
             chunk_index = task["chunk_index"]
             chunk_text = task["chunk_text"]
+            item = items_map.get(item_id)
 
             if not chunk_text:
-                # 如果 chunk_text 为空，从数据库获取完整内容
-                item = self.db.get_item(item_id)
+                # chunk_text 为空时从 item 获取完整内容
                 if item:
                     chunk_text = item["content"]
                 else:
+                    logger.warning("Item %s not found for embedding task %s", item_id, task["id"])
                     self.db.fail_embedding(task["id"])
                     continue
 
             doc_id = f"{item_id}:{chunk_index}"
             doc_ids.append(doc_id)
             texts.append(chunk_text)
-
-            # 获取 item 元数据
-            item = self.db.get_item(item_id)
             metadatas.append({
                 "item_id": item_id,
                 "chunk_index": chunk_index,

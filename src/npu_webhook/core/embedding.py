@@ -104,6 +104,14 @@ class OllamaEmbedding(EmbeddingEngine):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read())
             self._dimension = len(result["embeddings"][0])
+        except OSError as e:
+            raise ConnectionError(
+                f"Cannot reach Ollama at {self.base_url} — is Ollama running? ({e})"
+            ) from e
+        except (KeyError, IndexError, ValueError) as e:
+            raise ConnectionError(
+                f"Ollama responded but model '{model}' may not be pulled: {e}"
+            ) from e
         except Exception as e:
             raise ConnectionError(f"Ollama embedding probe failed ({self.base_url}): {e}") from e
 

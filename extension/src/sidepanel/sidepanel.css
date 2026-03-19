@@ -59,8 +59,24 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; color
 /* 加载中 */
 .sp-loading { text-align: center; padding: 20px; color: #9ca3af; }
 
-/* 刷新按钮 */
+/* 刷新/加载更多按钮 */
 .sp-refresh {
   display: block; margin: 12px auto; padding: 6px 16px; border: 1px solid #d1d5db;
   border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px;
 }
+.sp-refresh:disabled { opacity: 0.5; cursor: default; }
+
+/* 错误提示 */
+.sp-error {
+  padding: 8px 12px; margin-bottom: 10px; border-radius: 6px;
+  background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; font-size: 12px;
+}
+
+/* 删除中的卡片 */
+.sp-card--deleting { opacity: 0.5; pointer-events: none; }
+
+/* 展开收起提示 */
+.sp-card__toggle { font-size: 11px; color: #9ca3af; margin-top: 4px; text-align: right; }
+
+/* 搜索按钮禁用 */
+.sp-search button:disabled { opacity: 0.5; cursor: default; }

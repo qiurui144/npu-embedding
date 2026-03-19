@@ -38,17 +38,23 @@ const styles = {
 
 function Popup() {
   const [online, setOnline] = useState(false);
-  const [stats, setStats] = useState({ items: 0, vectors: 0 });
+  const [stats, setStats] = useState({ items: 0, vectors: 0, pending: 0 });
   const [injecting, setInjecting] = useState(true);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     sendToWorker(MSG.GET_STATUS).then((res) => {
       if (res) {
         setOnline(res.online);
-        setStats({ items: res.total_items || 0, vectors: res.total_vectors || 0 });
+        setStats({
+          items: res.total_items || 0,
+          vectors: res.total_vectors || 0,
+          pending: res.pending_embeddings || 0,
+        });
         setInjecting(res.injection_enabled !== false);
       }
-    }).catch(() => setOnline(false));
+      setLoading(false);
+    }).catch(() => { setOnline(false); setLoading(false); });
   }, []);
 
   const toggleInjection = () => {
@@ -67,16 +73,27 @@ function Popup() {
         <h2 style={styles.title}>npu-webhook</h2>
       </div>
 
+      {!online && !loading && (
+        <div style={{ fontSize: '12px', color: '#dc2626', marginBottom: '8px', padding: '6px 8px', background: '#fef2f2', borderRadius: '4px' }}>
+          后端离线，请启动 npu-webhook
+        </div>
+      )}
+
       <div style={styles.stats}>
         <div style={styles.stat}>
-          <div style={styles.statNum}>{stats.items}</div>
+          <div style={styles.statNum}>{loading ? '…' : stats.items}</div>
           <div style={styles.statLabel}>知识条目</div>
         </div>
         <div style={styles.stat}>
-          <div style={styles.statNum}>{stats.vectors}</div>
+          <div style={styles.statNum}>{loading ? '…' : stats.vectors}</div>
           <div style={styles.statLabel}>向量数</div>
         </div>
       </div>
+      {stats.pending > 0 && (
+        <div style={{ fontSize: '11px', color: '#9ca3af', textAlign: 'center', marginBottom: '8px' }}>
+          {stats.pending} 条待 embedding 处理
+        </div>
+      )}
 
       <div style={styles.row}>
         <span>知识注入</span>

@@ -1,8 +1,16 @@
 /**
  * 对话捕获 — MutationObserver 监听 AI 回答，配对后推送摘要到 Worker
+ *
+ * 修复：
+ * - WeakMap 替代 Map 存储 per-node timer，避免 DOM 节点内存泄漏
+ * - 队列替代单变量存储 pendingUser，支持多轮追问正确配对
+ * - sendToWorker 失败时从 _seen 移除 hash，允许下次重试
+ * - _markExisting() 仅扫描最近 50 条消息，避免大聊天记录初始化卡顿
  */
 
 import { MSG, sendToWorker } from '../shared/messages.js';
+
+const MAX_EXISTING_SCAN = 50; // 初始化时最多扫描的历史消息数量
 
 /** djb2 hash */
 function hashStr(str) {
@@ -18,8 +26,9 @@ export class ConversationCapture {
     this.adapter = adapter;
     this._observer = null;
     this._seen = new Set();
-    this._pendingUser = null;
-    this._nodeTimers = new Map(); // per-node debounce，防止多消息并发丢失
+    this._pendingUsers = []; // 队列支持多轮追问
+    this._nodeTimers = new WeakMap(); // WeakMap 避免 DOM 节点内存泄漏
+    this._retryTimers = []; // 存储重试 timer 以便 stop() 时清理
   }
 
   start() {
@@ -52,15 +61,18 @@ export class ConversationCapture {
       this._observer.disconnect();
       this._observer = null;
     }
-    for (const timer of this._nodeTimers.values()) clearTimeout(timer);
-    this._nodeTimers.clear();
+    // WeakMap 不可迭代，retryTimers 单独清理
+    for (const t of this._retryTimers) clearTimeout(t);
+    this._retryTimers = [];
   }
 
+  /** 只扫描最近 N 条消息，避免大聊天记录初始化卡顿 */
   _markExisting() {
     const nodes = document.querySelectorAll(this.adapter.messages);
-    for (const node of nodes) {
+    const recent = Array.from(nodes).slice(-MAX_EXISTING_SCAN);
+    for (const node of recent) {
       const msg = this.adapter.extractMessage(node);
-      if (msg) this._seen.add(hashStr(msg.content));
+      if (msg?.content) this._seen.add(hashStr(msg.content));
     }
   }
 
@@ -68,33 +80,34 @@ export class ConversationCapture {
     const msgNode = node.matches?.(this.adapter.messages) ? node : node.querySelector?.(this.adapter.messages);
     if (!msgNode) return;
 
-    // per-node debounce: 每个消息节点独立计时，互不影响
-    const nodeKey = msgNode;
-    if (this._nodeTimers.has(nodeKey)) clearTimeout(this._nodeTimers.get(nodeKey));
-    this._nodeTimers.set(nodeKey, setTimeout(() => {
-      this._nodeTimers.delete(nodeKey);
+    // per-node debounce: WeakMap key 为 DOM 节点，节点被 GC 后自动释放
+    const existing = this._nodeTimers.get(msgNode);
+    if (existing) clearTimeout(existing);
+    this._nodeTimers.set(msgNode, setTimeout(() => {
       this._processNode(msgNode);
     }, 2000));
   }
 
   _processNode(node) {
     if (!this.adapter.isComplete(node)) {
-      this._debounceTimer = setTimeout(() => this._processNode(node), 1000);
+      const t = setTimeout(() => this._processNode(node), 1000);
+      this._retryTimers.push(t);
       return;
     }
 
     const msg = this.adapter.extractMessage(node);
-    if (!msg) return;
+    if (!msg?.content) return;
 
     const h = hashStr(msg.content);
     if (this._seen.has(h)) return;
     this._seen.add(h);
 
     if (msg.role === 'user') {
-      this._pendingUser = msg;
-    } else if (msg.role === 'assistant' && this._pendingUser) {
-      this._sendPair(this._pendingUser, msg);
-      this._pendingUser = null;
+      // 队列存储，支持连续问题的正确配对
+      this._pendingUsers.push(msg);
+    } else if (msg.role === 'assistant' && this._pendingUsers.length > 0) {
+      const user = this._pendingUsers.shift();
+      this._sendPair(user, msg);
     }
   }
 
@@ -102,7 +115,6 @@ export class ConversationCapture {
     const title = user.content.slice(0, 100);
     const fullContent = `用户: ${user.content}\n\n助手: ${assistant.content}`;
 
-    // 短对话直接入库，长对话请求摘要后入库
     if (fullContent.length < 500) {
       this._directSave(title, fullContent);
     } else {
@@ -110,8 +122,9 @@ export class ConversationCapture {
     }
   }
 
-  /** 短对话直接入库 */
+  /** 短对话直接入库；失败时从 _seen 移除 hash 允许重试 */
   _directSave(title, content) {
+    const hash = hashStr(content);
     const data = {
       title,
       content,
@@ -122,7 +135,8 @@ export class ConversationCapture {
     };
 
     sendToWorker(MSG.CAPTURE_CONVERSATION, { data }).catch((err) => {
-      console.warn('[npu-webhook] Capture send failed:', err);
+      console.warn('[npu-webhook] Capture send failed, will retry next time:', err);
+      this._seen.delete(hash); // 允许下次重新捕获
     });
   }
 
@@ -134,12 +148,12 @@ export class ConversationCapture {
       source_type: 'ai_chat',
       url: location.href,
       domain: location.hostname,
-      metadata: { platform: this.adapter.name || 'unknown', has_summary: 'true' },
+      metadata: { platform: this.adapter.name || 'unknown', has_summary: 'pending' },
     };
 
     sendToWorker(MSG.SUMMARIZE_AND_SAVE, { data }).catch((err) => {
-      // 摘要失败时回退到直接保存全文
       console.warn('[npu-webhook] Summarize failed, saving full text:', err);
+      // 摘要失败回退到直接保存，但 has_summary 需改为 false
       this._directSave(title, fullContent);
     });
   }

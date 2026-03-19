@@ -24,7 +24,7 @@ class IndexPipeline:
 
         返回 item_id 或 None（跳过/失败）
         """
-        path = Path(file_path)
+        path = Path(file_path).resolve()
         if not path.exists() or not path.is_file():
             return None
 
@@ -36,9 +36,13 @@ class IndexPipeline:
             return existing.get("item_id")
 
         # 解析文件
-        title, content = parse_file(path)
+        try:
+            title, content = parse_file(path)
+        except Exception:
+            logger.warning("Failed to parse file: %s", path, exc_info=True)
+            return None
         if not content.strip():
-            logger.debug("Empty content, skipping: %s", path)
+            logger.debug("Empty content after parsing, skipping: %s", path)
             return None
 
         # 如果已有 item，更新；否则新建
@@ -81,7 +85,8 @@ class IndexPipeline:
         dir_id = dir_info["id"]
 
         count = 0
-        suffixes = {f".{ft}" for ft in file_types}
+        # 规范化为小写，兼容用户配置大写扩展名（如 ".MD"）
+        suffixes = {f".{ft.lower().lstrip('.')}" for ft in file_types}
 
         if recursive:
             files = (f for f in dir_path.rglob("*") if f.is_file() and f.suffix.lower() in suffixes)

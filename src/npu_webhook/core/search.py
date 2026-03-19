@@ -36,15 +36,21 @@ class Reranker:
     """Ollama Reranker — embedding 余弦相似度精排，带 LRU 缓存"""
 
     def __init__(self, model: str = "bge-m3", base_url: str = "http://localhost:11434") -> None:
+        import time
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._available: bool | None = None
+        self._probe_ts: float = 0.0
+        self._probe_ttl: float = 300.0  # 5 分钟重新探测
         self._cache = _LRUCache(maxsize=256)
+        self._time = time
 
     @property
     def available(self) -> bool:
-        if self._available is None:
+        now = self._time.time()
+        if self._available is None or (now - self._probe_ts > self._probe_ttl):
             self._available = self._probe()
+            self._probe_ts = now
         return self._available
 
     def _probe(self) -> bool:
@@ -150,11 +156,11 @@ class HybridSearchEngine:
         rerank: bool = False,
     ) -> list[dict]:
         """混合搜索：向量 + 全文，RRF 融合，可选 rerank"""
-        # 上下文感知
+        # 上下文感知：截取上下文长度防止 query 膨胀，用明确分隔符
         search_query = query
         if context:
-            ctx_text = " ".join(context[-3:])
-            search_query = f"{ctx_text} {query}"
+            ctx_text = " | ".join(c[:150] for c in context[-3:])
+            search_query = f"{ctx_text} || {query}"
 
         # 1. 向量搜索
         vector_results: list[dict] = []
@@ -216,9 +222,11 @@ class HybridSearchEngine:
                 item_data[item_id].setdefault("url", r.get("url"))
                 item_data[item_id].setdefault("created_at", r.get("created_at"))
 
-        # DB 补全 + quality_score 加权
-        for item_id in list(scores.keys()):
-            db_item = self.db.get_item(item_id)
+        # DB 批量补全 + quality_score 加权（一次查询替代 N+1）
+        all_ids = list(scores.keys())
+        db_rows = {row["id"]: row for row in self.db.get_items_batch(all_ids)}
+        for item_id in all_ids:
+            db_item = db_rows.get(item_id)
             if db_item:
                 data = item_data.setdefault(item_id, {"id": item_id})
                 data.setdefault("title", db_item["title"])

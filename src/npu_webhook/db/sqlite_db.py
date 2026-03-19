@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS embedding_queue (
 CREATE INDEX IF NOT EXISTS idx_eq_status_priority
     ON embedding_queue(status, priority, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_ki_created_at
+    ON knowledge_items(created_at DESC) WHERE is_deleted = 0;
+
+CREATE INDEX IF NOT EXISTS idx_ki_source_type
+    ON knowledge_items(source_type) WHERE is_deleted = 0;
+
 -- 绑定的本地目录
 CREATE TABLE IF NOT EXISTS bound_directories (
     id          TEXT PRIMARY KEY,
@@ -187,6 +193,17 @@ class SQLiteDB:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_items_batch(self, item_ids: list[str]) -> list[dict]:
+        """批量获取条目，单条 SQL 替代 N+1 查询"""
+        if not item_ids:
+            return []
+        placeholders = ",".join("?" * len(item_ids))
+        rows = self.conn.execute(
+            f"SELECT * FROM knowledge_items WHERE id IN ({placeholders}) AND is_deleted = 0",
+            item_ids,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_items(
         self,
         offset: int = 0,
@@ -270,10 +287,10 @@ class SQLiteDB:
             if rows:
                 return [dict(r) for r in rows]
         except Exception as e:
-            logger.debug("FTS5 MATCH failed (%s), falling back to LIKE", e)
+            logger.warning("FTS5 MATCH failed (%s), falling back to LIKE search", e)
 
-        # FTS 匹配失败时回退到 LIKE
-        like_q = f"%{query}%"
+        # FTS 匹配失败时回退到 LIKE（截取 query 防止超长注入）
+        like_q = f"%{query[:200]}%"
         rows = self.conn.execute(
             """SELECT * FROM knowledge_items
                WHERE is_deleted = 0 AND (title LIKE ? OR content LIKE ?)
