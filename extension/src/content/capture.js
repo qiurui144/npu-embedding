@@ -19,7 +19,7 @@ export class ConversationCapture {
     this._observer = null;
     this._seen = new Set();
     this._pendingUser = null;
-    this._debounceTimer = null;
+    this._nodeTimers = new Map(); // per-node debounce，防止多消息并发丢失
   }
 
   start() {
@@ -52,7 +52,8 @@ export class ConversationCapture {
       this._observer.disconnect();
       this._observer = null;
     }
-    if (this._debounceTimer) clearTimeout(this._debounceTimer);
+    for (const timer of this._nodeTimers.values()) clearTimeout(timer);
+    this._nodeTimers.clear();
   }
 
   _markExisting() {
@@ -67,8 +68,13 @@ export class ConversationCapture {
     const msgNode = node.matches?.(this.adapter.messages) ? node : node.querySelector?.(this.adapter.messages);
     if (!msgNode) return;
 
-    if (this._debounceTimer) clearTimeout(this._debounceTimer);
-    this._debounceTimer = setTimeout(() => this._processNode(msgNode), 2000);
+    // per-node debounce: 每个消息节点独立计时，互不影响
+    const nodeKey = msgNode;
+    if (this._nodeTimers.has(nodeKey)) clearTimeout(this._nodeTimers.get(nodeKey));
+    this._nodeTimers.set(nodeKey, setTimeout(() => {
+      this._nodeTimers.delete(nodeKey);
+      this._processNode(msgNode);
+    }, 2000));
   }
 
   _processNode(node) {

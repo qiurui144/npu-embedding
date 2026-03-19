@@ -1,6 +1,7 @@
-"""RRF 混合搜索引擎（向量 + 全文融合 + Reranker）"""
+"""RRF 混合搜索引擎（向量 + 全文融合 + Reranker + 质量加权）"""
 
 import logging
+from collections import OrderedDict
 
 from npu_webhook.core.fulltext import build_fts_query
 from npu_webhook.core.vectorstore import VectorStore
@@ -9,12 +10,36 @@ from npu_webhook.db.sqlite_db import SQLiteDB
 logger = logging.getLogger(__name__)
 
 
-class Reranker:
-    """Ollama Reranker — 通过 embedding 余弦相似度做 cross-encoder 风格的精排"""
+class _LRUCache:
+    """简单 LRU 缓存（线程不安全，但在单请求链路内使用足够）"""
 
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, maxsize: int = 128) -> None:
+        self._cache: OrderedDict[str, list[list[float]]] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: str) -> list[list[float]] | None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+
+    def put(self, key: str, value: list[list[float]]) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
+        self._cache[key] = value
+
+
+class Reranker:
+    """Ollama Reranker — embedding 余弦相似度精排，带 LRU 缓存"""
+
+    def __init__(self, model: str = "bge-m3", base_url: str = "http://localhost:11434") -> None:
+        self.model = model
         self.base_url = base_url.rstrip("/")
         self._available: bool | None = None
+        self._cache = _LRUCache(maxsize=256)
 
     @property
     def available(self) -> bool:
@@ -30,44 +55,60 @@ class Reranker:
         except Exception:
             return False
 
-    def rerank(self, query: str, documents: list[dict], top_k: int = 3) -> list[dict]:
-        """用 embedding 余弦相似度对 documents 重排序"""
-        if not documents or not self.available:
-            return documents[:top_k]
-
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        """批量 embedding，对已缓存的文本跳过请求"""
         import json
         import urllib.request
 
-        texts = [query] + [d.get("content", "")[:512] for d in documents]
-        try:
-            data = json.dumps({"model": "bge-m3", "input": texts}).encode()
+        uncached_idx = []
+        uncached_texts = []
+        results: list[list[float] | None] = [None] * len(texts)
+
+        for i, t in enumerate(texts):
+            key = t[:512]  # 缓存 key 截取前 512 字符
+            cached = self._cache.get(key)
+            if cached:
+                results[i] = cached[0]
+            else:
+                uncached_idx.append(i)
+                uncached_texts.append(key)
+
+        if uncached_texts:
+            data = json.dumps({"model": self.model, "input": uncached_texts}).encode()
             req = urllib.request.Request(
                 f"{self.base_url}/api/embed",
                 data=data,
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read())
+                api_result = json.loads(resp.read())
 
-            embeddings = result["embeddings"]
-            query_emb = embeddings[0]
+            for j, idx in enumerate(uncached_idx):
+                emb = api_result["embeddings"][j]
+                results[idx] = emb
+                self._cache.put(uncached_texts[j], [emb])
 
-            # 余弦相似度
-            import math
-            def cosine_sim(a: list[float], b: list[float]) -> float:
-                dot = sum(x * y for x, y in zip(a, b))
-                na = math.sqrt(sum(x * x for x in a))
-                nb = math.sqrt(sum(x * x for x in b))
-                return dot / max(na * nb, 1e-12)
+        return results  # type: ignore[return-value]
 
-            scored = []
+    def rerank(self, query: str, documents: list[dict], top_k: int = 3) -> list[dict]:
+        """余弦相似度精排"""
+        if not documents or not self.available:
+            return documents[:top_k]
+
+        try:
+            import numpy as np
+
+            texts = [query[:512]] + [d.get("content", "")[:512] for d in documents]
+            embeddings = self._embed(texts)
+
+            query_emb = np.array(embeddings[0])
             for i, doc in enumerate(documents):
-                sim = cosine_sim(query_emb, embeddings[i + 1])
+                doc_emb = np.array(embeddings[i + 1])
+                sim = float(np.dot(query_emb, doc_emb) / max(np.linalg.norm(query_emb) * np.linalg.norm(doc_emb), 1e-12))
                 doc["rerank_score"] = sim
-                scored.append(doc)
 
-            scored.sort(key=lambda d: d["rerank_score"], reverse=True)
-            return scored[:top_k]
+            documents.sort(key=lambda d: d.get("rerank_score", 0), reverse=True)
+            return documents[:top_k]
 
         except Exception as e:
             logger.warning("Rerank failed, returning original order: %s", e)
@@ -75,11 +116,7 @@ class Reranker:
 
 
 class HybridSearchEngine:
-    """Reciprocal Rank Fusion 混合搜索 + 可选 Rerank
-
-    同时执行向量搜索和全文搜索，用 RRF 算法融合排序，
-    可选 Reranker 二次精排。
-    """
+    """RRF 混合搜索 + Rerank + 质量加权"""
 
     def __init__(
         self,
@@ -94,7 +131,14 @@ class HybridSearchEngine:
         self.rrf_k = rrf_k
         self.vector_weight = vector_weight
         self.fulltext_weight = fulltext_weight
-        self.reranker = Reranker()
+        # 从配置动态获取模型名
+        model_name = "bge-m3"
+        try:
+            from npu_webhook.config import settings
+            model_name = settings.embedding.model
+        except Exception:
+            pass
+        self.reranker = Reranker(model=model_name)
 
     def search(
         self,
@@ -105,36 +149,22 @@ class HybridSearchEngine:
         min_score: float = 0.0,
         rerank: bool = False,
     ) -> list[dict]:
-        """混合搜索：向量 + 全文，RRF 融合排序
-
-        Args:
-            query: 搜索查询
-            top_k: 返回数量
-            source_types: 过滤来源类型
-            context: 对话上下文（拼接到 query 增强搜索语义）
-            min_score: 最低分数阈值
-            rerank: 是否启用 reranker 二次排序
-        """
-        # 上下文感知：将最近对话拼接到查询中
+        """混合搜索：向量 + 全文，RRF 融合，可选 rerank"""
+        # 上下文感知
         search_query = query
         if context:
-            # 取最近 3 条上下文，拼接到 query 前面作为语义背景
             ctx_text = " ".join(context[-3:])
             search_query = f"{ctx_text} {query}"
 
         # 1. 向量搜索
         vector_results: list[dict] = []
         if self.vector_store.available:
-            where = None
-            if source_types:
-                where = {"source_type": {"$in": source_types}}
+            where = {"source_type": {"$in": source_types}} if source_types else None
             vector_results = self.vector_store.search(search_query, top_k=top_k * 2, where=where)
 
-        # 2. 全文搜索
-        fts_query = build_fts_query(query)  # 全文搜索用原始 query（分词更精确）
+        # 2. 全文搜索（用原始 query 分词更精确）
+        fts_query = build_fts_query(query)
         fts_results = self.db.fts_search(fts_query, limit=top_k * 2)
-
-        # 过滤 source_type
         if source_types:
             fts_results = [r for r in fts_results if r.get("source_type") in source_types]
 
@@ -158,19 +188,13 @@ class HybridSearchEngine:
         fts_results: list[dict],
         top_k: int,
     ) -> list[dict]:
-        """RRF 融合排序
-
-        score(d) = w_vec * 1/(k+rank_vec) + w_fts * 1/(k+rank_fts)
-        """
+        """RRF 融合排序 + 质量加权"""
         scores: dict[str, float] = {}
         item_data: dict[str, dict] = {}
 
-        # 向量搜索结果
         for rank, r in enumerate(vector_results):
-            # 向量结果的 id 是 chunk id (item_id:chunk_index)
             item_id = r.get("metadata", {}).get("item_id", r["id"].split(":")[0])
-            rrf_score = self.vector_weight / (self.rrf_k + rank + 1)
-            scores[item_id] = scores.get(item_id, 0) + rrf_score
+            scores[item_id] = scores.get(item_id, 0) + self.vector_weight / (self.rrf_k + rank + 1)
             if item_id not in item_data:
                 item_data[item_id] = {
                     "id": item_id,
@@ -179,46 +203,35 @@ class HybridSearchEngine:
                     "vector_score": r.get("score", 0),
                 }
 
-        # 全文搜索结果
         for rank, r in enumerate(fts_results):
             item_id = r["id"]
-            rrf_score = self.fulltext_weight / (self.rrf_k + rank + 1)
-            scores[item_id] = scores.get(item_id, 0) + rrf_score
+            scores[item_id] = scores.get(item_id, 0) + self.fulltext_weight / (self.rrf_k + rank + 1)
             if item_id not in item_data:
                 item_data[item_id] = {
-                    "id": item_id,
-                    "title": r.get("title", ""),
-                    "content": r.get("content", ""),
-                    "source_type": r.get("source_type", ""),
-                    "url": r.get("url"),
-                    "created_at": r.get("created_at"),
+                    "id": item_id, "title": r.get("title", ""), "content": r.get("content", ""),
+                    "source_type": r.get("source_type", ""), "url": r.get("url"), "created_at": r.get("created_at"),
                 }
             else:
-                # 补充全文搜索的字段
                 item_data[item_id].setdefault("title", r.get("title", ""))
                 item_data[item_id].setdefault("url", r.get("url"))
                 item_data[item_id].setdefault("created_at", r.get("created_at"))
 
-        # 从 DB 补全信息 + quality_score 加权
-        for item_id in scores:
+        # DB 补全 + quality_score 加权
+        for item_id in list(scores.keys()):
             db_item = self.db.get_item(item_id)
             if db_item:
-                if item_id not in item_data:
-                    item_data[item_id] = {"id": item_id}
-                item_data[item_id].setdefault("title", db_item["title"])
-                item_data[item_id].setdefault("url", db_item.get("url"))
-                item_data[item_id].setdefault("source_type", db_item["source_type"])
-                item_data[item_id].setdefault("created_at", db_item["created_at"])
-                # quality_score 加权: 高质量条目获得最多 20% 的分数 bonus
+                data = item_data.setdefault(item_id, {"id": item_id})
+                data.setdefault("title", db_item["title"])
+                data.setdefault("url", db_item.get("url"))
+                data.setdefault("source_type", db_item["source_type"])
+                data.setdefault("created_at", db_item["created_at"])
                 quality = db_item.get("quality_score") or 1.0
                 scores[item_id] *= (0.8 + 0.2 * quality)
 
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_k]
-
         results = []
         for item_id in sorted_ids:
             data = item_data.get(item_id, {"id": item_id})
             data["score"] = scores[item_id]
             results.append(data)
-
         return results

@@ -131,8 +131,9 @@ export class PrefixInjector {
       console.warn('[npu-webhook] Inject search failed:', err);
     }
 
-    this._injecting = false;
+    // 保持 _injecting=true 防止递归，click 后延迟 reset
     sendBtn.click();
+    setTimeout(() => { this._injecting = false; }, 100);
   }
 
   _buildPrefix(results, originalQuestion) {

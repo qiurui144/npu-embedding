@@ -1,10 +1,13 @@
 """SQLite 数据库管理 + schema 初始化"""
 
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
 -- 知识条目
@@ -118,6 +121,7 @@ class SQLiteDB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.execute("PRAGMA busy_timeout=5000")  # 5s 等待锁释放，避免 SQLITE_BUSY
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -265,8 +269,8 @@ class SQLiteDB:
             ).fetchall()
             if rows:
                 return [dict(r) for r in rows]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("FTS5 MATCH failed (%s), falling back to LIKE", e)
 
         # FTS 匹配失败时回退到 LIKE
         like_q = f"%{query}%"
@@ -320,11 +324,21 @@ class SQLiteDB:
         )
         self.conn.commit()
 
-    def fail_embedding(self, queue_id: int) -> None:
-        self.conn.execute(
-            "UPDATE embedding_queue SET status = 'failed', attempts = attempts + 1 WHERE id = ?",
-            (queue_id,),
-        )
+    def fail_embedding(self, queue_id: int, max_attempts: int = 3) -> None:
+        """标记任务失败，超过最大重试次数后标记为 abandoned"""
+        row = self.conn.execute("SELECT attempts FROM embedding_queue WHERE id = ?", (queue_id,)).fetchone()
+        attempts = (row[0] if row else 0) + 1
+        if attempts >= max_attempts:
+            self.conn.execute(
+                "UPDATE embedding_queue SET status = 'abandoned', attempts = ? WHERE id = ?",
+                (attempts, queue_id),
+            )
+            logger.warning("Embedding task %d abandoned after %d attempts", queue_id, attempts)
+        else:
+            self.conn.execute(
+                "UPDATE embedding_queue SET status = 'pending', attempts = ? WHERE id = ?",
+                (attempts, queue_id),
+            )
         self.conn.commit()
 
     def pending_embedding_count(self) -> int:
