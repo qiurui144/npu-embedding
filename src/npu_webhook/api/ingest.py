@@ -25,6 +25,11 @@ async def ingest(req: IngestRequest) -> IngestResponse:
     if req.domain and req.domain in settings.ingest.excluded_domains:
         raise HTTPException(status_code=400, detail="Domain is excluded")
 
+    # 文本级近重复检测（前 200 字符匹配）
+    existing_id = state.db.find_near_duplicate(req.content, req.source_type)
+    if existing_id:
+        return IngestResponse(id=existing_id, duplicate=True)
+
     # 存入 SQLite
     item_id = state.db.insert_item(
         title=req.title,

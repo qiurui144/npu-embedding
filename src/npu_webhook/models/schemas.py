@@ -20,6 +20,7 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     id: str
     status: str = "ok"
+    duplicate: bool = False  # True 表示内容已存在，返回已有条目 ID
 
 
 class SearchQuery(BaseModel):

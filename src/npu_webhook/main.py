@@ -112,7 +112,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     state.queue_worker.start()
 
-    # 7. 启动目录 Watcher
+    # 7. 启动知识库自动清理 Worker
+    from npu_webhook.scheduler.cleaner import KnowledgeCleaner
+
+    state.cleaner = KnowledgeCleaner(db=state.db, vector_store=state.vector_store)
+    state.cleaner.start()
+
+    # 8. 启动目录 Watcher
     from npu_webhook.indexer.watcher import DirectoryWatcher
 
     def _on_file_change(path: str, event: str) -> None:
@@ -138,6 +144,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         state.watcher.stop()
     if state.queue_worker:
         state.queue_worker.stop()
+    if state.cleaner:
+        state.cleaner.stop()
     if state.db:
         state.db.close()
     logger.info("Shutdown complete")

@@ -10,6 +10,7 @@ from npu_webhook.db.chroma_db import ChromaDB
 from npu_webhook.db.sqlite_db import SQLiteDB
 from npu_webhook.indexer.pipeline import IndexPipeline
 from npu_webhook.indexer.watcher import DirectoryWatcher
+from npu_webhook.scheduler.cleaner import KnowledgeCleaner
 from npu_webhook.scheduler.queue import EmbeddingQueueWorker
 
 
@@ -26,6 +27,7 @@ class AppState:
     pipeline: IndexPipeline | None = None
     watcher: DirectoryWatcher | None = None
     queue_worker: EmbeddingQueueWorker | None = None
+    cleaner: KnowledgeCleaner | None = None
 
 
 # 全局单例

@@ -12,6 +12,10 @@ const api = new API();
 const dedup = new Map();
 const DEDUP_TTL = 60 * 60 * 1000; // 1h
 
+// --- 预取缓存 (queryHash -> {results, ts}) ---
+const prefetchCache = new Map();
+const PREFETCH_TTL = 30 * 1000; // 30s，覆盖"打字→发送"时间窗口
+
 // --- 连接状态 ---
 let backendOnline = false;
 let injectionEnabled = true;
@@ -87,13 +91,39 @@ async function handleMessage(msg, sender) {
     case MSG.SUMMARIZE_AND_SAVE:
       return handleSummarizeAndSave(msg.data);
 
-    case MSG.SEARCH_RELEVANT:
+    case MSG.PREFETCH: {
+      // 打字时后台预取，结果存入缓存供注入使用（不阻塞用户）
+      const prefetchKey = djb2((msg.query || '') + JSON.stringify(msg.source_types || null));
+      if (!prefetchCache.has(prefetchKey) && backendOnline) {
+        api.searchRelevant({
+          query: msg.query,
+          top_k: msg.top_k || 3,
+          context: msg.context || null,
+          min_score: msg.min_score || 0.3,
+          source_types: msg.source_types || null,
+        }).then((results) => {
+          prefetchCache.set(prefetchKey, { results, ts: Date.now() });
+        }).catch(() => {}); // 静默失败，注入时会回退到实时请求
+      }
+      return { ok: true };
+    }
+
+    case MSG.SEARCH_RELEVANT: {
+      // 先查预取缓存，命中则直接返回（<1ms）
+      const cacheKey = djb2((msg.query || '') + JSON.stringify(msg.source_types || null));
+      const cached = prefetchCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < PREFETCH_TTL) {
+        prefetchCache.delete(cacheKey); // 消费后删除
+        return cached.results;
+      }
       return api.searchRelevant({
         query: msg.query,
         top_k: msg.top_k || 3,
         context: msg.context || null,
         min_score: msg.min_score || 0,
+        source_types: msg.source_types || null,
       });
+    }
 
     case MSG.SAVE_SELECTION:
       return handleCapture(msg.data);
@@ -244,6 +274,11 @@ async function healthCheck() {
     if (now - ts > DEDUP_TTL) dedup.delete(k);
   }
   if (dedup.size > 0) persistDedup();
+
+  // 清理过期预取缓存
+  for (const [k, v] of prefetchCache) {
+    if (now - v.ts > PREFETCH_TTL) prefetchCache.delete(k);
+  }
 
   setTimeout(healthCheck, 30000);
 }

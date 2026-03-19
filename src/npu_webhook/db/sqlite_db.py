@@ -504,6 +504,75 @@ class SQLiteDB:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def find_near_duplicate(self, content: str, source_type: str, threshold: int = 200) -> str | None:
+        """查找文本级近重复条目（前 threshold 字符相同视为重复）
+
+        用于入库前快速去重，避免同一对话被反复存储。
+        返回已存在条目的 id，否则返回 None。
+        """
+        prefix = content[:threshold]
+        row = self.conn.execute(
+            """SELECT id FROM knowledge_items
+               WHERE is_deleted = 0
+               AND source_type = ?
+               AND SUBSTR(content, 1, ?) = ?
+               LIMIT 1""",
+            (source_type, threshold, prefix),
+        ).fetchone()
+        return row[0] if row else None
+
+    def bulk_archive_stale(
+        self,
+        *,
+        quality_threshold: float = 0.2,
+        unused_days: int = 60,
+        chat_unused_days: int = 30,
+        limit: int = 200,
+    ) -> list[str]:
+        """批量软删除低质量/长期未使用的条目
+
+        策略：
+        1. quality_score < threshold AND 60+ 天未使用 → 软删除
+        2. ai_chat 类型 AND use_count == 0 AND 30+ 天未创建 → 软删除
+
+        返回被删除的 item_id 列表（用于清理向量库）
+        """
+        now = _now_iso()
+        rows_low_quality = self.conn.execute(
+            """SELECT id FROM knowledge_items
+               WHERE is_deleted = 0
+               AND quality_score < ?
+               AND (
+                   (last_used_at IS NULL AND julianday(?) - julianday(created_at) > ?)
+                   OR (last_used_at IS NOT NULL AND julianday(?) - julianday(last_used_at) > ?)
+               )
+               LIMIT ?""",
+            (quality_threshold, now, unused_days, now, unused_days, limit // 2),
+        ).fetchall()
+
+        rows_cold_chat = self.conn.execute(
+            """SELECT id FROM knowledge_items
+               WHERE is_deleted = 0
+               AND source_type = 'ai_chat'
+               AND use_count = 0
+               AND julianday(?) - julianday(created_at) > ?
+               LIMIT ?""",
+            (now, chat_unused_days, limit // 2),
+        ).fetchall()
+
+        archived_ids = list({r[0] for r in rows_low_quality} | {r[0] for r in rows_cold_chat})
+        if not archived_ids:
+            return []
+
+        placeholders = ",".join("?" * len(archived_ids))
+        self.conn.execute(
+            f"UPDATE knowledge_items SET is_deleted = 1, updated_at = ? WHERE id IN ({placeholders})",
+            [now, *archived_ids],
+        )
+        self.conn.commit()
+        logger.info("Archived %d stale items", len(archived_ids))
+        return archived_ids
+
     def get_item_stats(self, item_id: str) -> dict:
         """获取条目的使用统计"""
         item = self.get_item(item_id)
