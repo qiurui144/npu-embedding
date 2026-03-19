@@ -31,11 +31,10 @@ export default function TimelinePage() {
   const deleteItem = async (id, e) => {
     e.stopPropagation();
     try {
-      await sendToWorker(MSG.SEARCH, { query: '__delete__', item_id: id });
-      // 直接通过 API 删除（worker 没有 delete handler，用 fetch）
       const settings = await sendToWorker(MSG.GET_SETTINGS);
       const baseUrl = (settings?.backendUrl || 'http://localhost:18900').replace(/\/+$/, '');
-      await fetch(`${baseUrl}/api/v1/items/${id}`, { method: 'DELETE' });
+      const resp = await fetch(`${baseUrl}/api/v1/items/${id}`, { method: 'DELETE' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       setItems((prev) => prev.filter((it) => it.id !== id));
       setTotal((t) => t - 1);
     } catch (err) {

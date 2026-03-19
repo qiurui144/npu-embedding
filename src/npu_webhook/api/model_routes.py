@@ -7,7 +7,11 @@ from fastapi import APIRouter
 
 from npu_webhook.app_state import state
 from npu_webhook.config import settings
-from npu_webhook.platform.detector import detect_all_devices, device_to_engine_params
+from npu_webhook.platform.detector import (
+    detect_all_devices,
+    device_to_engine_params,
+    full_platform_check,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,20 +102,40 @@ async def list_models() -> dict:
 
 @router.post("/models/check")
 async def check_deployment() -> dict:
-    """部署前置检查：硬件、模型、依赖"""
+    """部署前置检查：内核 + 硬件 + 驱动 + 模型 + 依赖 + 一键安装命令"""
+    report = full_platform_check()
     checks = []
 
-    # 1. 硬件检测
-    devices = detect_all_devices()
-    has_accelerator = any(d.device_type in ("npu", "igpu", "ollama") for d in devices)
+    # 1. 内核/系统信息
+    checks.append({
+        "name": "system",
+        "status": "ok",
+        "message": f"{report.os} {report.kernel} ({report.arch})",
+    })
+
+    # 2. 硬件检测
+    has_accelerator = any(d.device_type in ("npu", "igpu", "ollama") for d in report.devices)
     checks.append({
         "name": "hardware",
         "status": "ok" if has_accelerator else "warn",
-        "message": f"检测到 {len(devices)} 个设备" + (f"（含加速器）" if has_accelerator else "（仅 CPU）"),
-        "devices": [{"name": d.name, "type": d.device_type, "vendor": d.vendor} for d in devices],
+        "message": f"检测到 {len(report.devices)} 个设备" + ("（含加速器）" if has_accelerator else "（仅 CPU）"),
+        "devices": [{"name": d.name, "type": d.device_type, "vendor": d.vendor, "driver": d.driver} for d in report.devices],
     })
 
-    # 2. 当前模型状态
+    # 3. 驱动/软件栈检查
+    driver_ok = sum(d.installed for d in report.drivers)
+    driver_total = len(report.drivers)
+    checks.append({
+        "name": "drivers",
+        "status": "ok" if driver_ok == driver_total else "warn",
+        "message": f"{driver_ok}/{driver_total} 驱动/组件已就绪",
+        "details": [
+            {"name": d.name, "installed": d.installed, "version": d.version, "message": d.message}
+            for d in report.drivers
+        ],
+    })
+
+    # 4. 当前模型状态
     model = settings.embedding.model
     engine_ok = state.embedding_engine is not None
     checks.append({
@@ -122,7 +146,7 @@ async def check_deployment() -> dict:
         "dimension": state.embedding_engine.get_dimension() if engine_ok else None,
     })
 
-    # 3. Ollama 可达性
+    # 5. Ollama 可达性
     ollama_status = _check_ollama_model(model)
     ollama_ok = ollama_status.get("available", False)
     checks.append({
@@ -132,7 +156,7 @@ async def check_deployment() -> dict:
         "detail": ollama_status,
     })
 
-    # 4. ONNX 模型文件
+    # 6. ONNX 模型文件
     onnx_status = _check_onnx_model(model)
     checks.append({
         "name": "onnx_model",
@@ -141,7 +165,7 @@ async def check_deployment() -> dict:
         "path": onnx_status["path"],
     })
 
-    # 5. Python 依赖检查
+    # 7. Python 依赖检查
     dep_checks = []
     for pkg, purpose in [
         ("onnxruntime", "ONNX CPU/DirectML"),
@@ -162,7 +186,7 @@ async def check_deployment() -> dict:
         "packages": dep_checks,
     })
 
-    # 6. 数据库状态
+    # 8. 数据库状态
     db_ok = state.db is not None
     checks.append({
         "name": "database",
@@ -176,7 +200,11 @@ async def check_deployment() -> dict:
     if any(c["status"] == "fail" for c in checks):
         overall = "fail"
 
-    return {"overall": overall, "checks": checks}
+    return {
+        "overall": overall,
+        "checks": checks,
+        "install_commands": report.install_commands,
+    }
 
 
 @router.post("/models/download")

@@ -436,7 +436,8 @@ class TestStatusPage:
         page.goto(f"chrome-extension://{ext_id}/dist/sidepanel/index.html")
         page.wait_for_selector(".sp-tabs", timeout=5000)
         page.click("text=状态")
-        time.sleep(2)
+        # 等待 Worker 消息往返 + 后端 API 响应
+        time.sleep(5)
         items = page.query_selector_all(".sp-status-item")
         assert len(items) == 8
 

@@ -110,8 +110,9 @@ class OllamaEmbedding(EmbeddingEngine):
         logger.info("Ollama embedding ready: %s (dim=%d, url=%s)", model, self._dimension, self.base_url)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        import urllib.request
         import json
+        import urllib.error
+        import urllib.request
 
         data = json.dumps({"model": self.model, "input": texts}).encode()
         req = urllib.request.Request(
@@ -119,10 +120,14 @@ class OllamaEmbedding(EmbeddingEngine):
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read())
-
-        return result["embeddings"]
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read())
+            return result["embeddings"]
+        except (urllib.error.URLError, TimeoutError) as e:
+            raise ConnectionError(f"Ollama embed request failed: {e}") from e
+        except (json.JSONDecodeError, KeyError) as e:
+            raise ValueError(f"Ollama embed response invalid: {e}") from e
 
     def get_dimension(self) -> int:
         return self._dimension
@@ -166,10 +171,11 @@ def create_embedding_engine(
     device 取值:
       - ollama: 使用 Ollama HTTP API
       - cpu/directml/rocm: 使用本地 ONNX Runtime
+      - openvino: 使用 OpenVINO（Intel NPU/iGPU）
       - auto: 优先 Ollama，回退 ONNX
     """
     # Ollama 模式
-    if device == "ollama" or device == "auto":
+    if device in ("ollama", "auto"):
         try:
             return OllamaEmbedding(model=model_name)
         except Exception as e:
@@ -177,6 +183,10 @@ def create_embedding_engine(
                 logger.error("Ollama embedding failed: %s", e)
                 return None
             logger.info("Ollama not available, falling back to ONNX: %s", e)
+
+    # OpenVINO 模式（Intel NPU/iGPU）— Phase 4 实现后启用
+    if device == "openvino":
+        logger.warning("OpenVINO embedding not yet implemented, falling back to ONNX CPU")
 
     # ONNX 模式
     if data_dir is None:
@@ -189,7 +199,7 @@ def create_embedding_engine(
         return None
 
     actual_device = "cpu"
-    if device in ("cpu", "directml", "rocm"):
+    if device in ("directml", "rocm"):
         actual_device = device
 
     return ONNXEmbedding(model_dir, device=actual_device, max_length=max_length)
