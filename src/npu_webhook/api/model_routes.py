@@ -122,7 +122,22 @@ async def check_deployment() -> dict:
         "devices": [{"name": d.name, "type": d.device_type, "vendor": d.vendor, "driver": d.driver} for d in report.devices],
     })
 
-    # 3. 驱动/软件栈检查
+    # 3. 芯片级精确匹配
+    if report.chip_matches:
+        for cm in report.chip_matches:
+            checks.append({
+                "name": f"chip:{cm.chip_id}",
+                "status": "ok" if cm.driver_installed else "warn",
+                "message": cm.chip_name,
+                "kernel_ok": cm.kernel_ok,
+                "min_kernel": cm.min_kernel,
+                "current_kernel": cm.current_kernel,
+                "firmware_ok": cm.firmware_ok,
+                "missing": cm.missing,
+                "install_commands": cm.install_commands,
+            })
+
+    # 4. 驱动/软件栈检查
     driver_ok = sum(d.installed for d in report.drivers)
     driver_total = len(report.drivers)
     checks.append({
@@ -130,7 +145,8 @@ async def check_deployment() -> dict:
         "status": "ok" if driver_ok == driver_total else "warn",
         "message": f"{driver_ok}/{driver_total} 驱动/组件已就绪",
         "details": [
-            {"name": d.name, "installed": d.installed, "version": d.version, "message": d.message}
+            {"name": d.name, "installed": d.installed, "version": d.version,
+             "message": d.message, "required_by": d.required_by}
             for d in report.drivers
         ],
     })

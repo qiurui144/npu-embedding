@@ -400,7 +400,7 @@ class TestStatusPage:
 
     def test_status_online(self, page, ext_id):
         """连接状态显示在线"""
-        page.goto(f"chrome-extension://{ext_id}/dist/sidepanel/index.html")
+        page.goto(f"chrome-extension://{ext_id}/dist/sidepanel/index.html", wait_until="load", timeout=10000)
         page.wait_for_selector(".sp-tabs", timeout=5000)
         page.click("text=状态")
         time.sleep(3)
