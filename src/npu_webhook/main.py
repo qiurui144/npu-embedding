@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from npu_webhook.indexer.pipeline import IndexPipeline
 
-    state.pipeline = IndexPipeline(state.db, state.chunker)
+    state.pipeline = IndexPipeline(state.db, state.chunker, state.vector_store)
 
     # 6. 启动 Embedding Queue Worker
     from npu_webhook.scheduler.queue import EmbeddingQueueWorker

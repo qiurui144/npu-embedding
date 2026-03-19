@@ -7,6 +7,7 @@ from pathlib import Path
 
 from npu_webhook.core.chunker import Chunker
 from npu_webhook.core.parser import parse_file
+from npu_webhook.core.vectorstore import VectorStore
 from npu_webhook.db.sqlite_db import SQLiteDB
 
 logger = logging.getLogger(__name__)
@@ -15,9 +16,10 @@ logger = logging.getLogger(__name__)
 class IndexPipeline:
     """文件索引处理管道"""
 
-    def __init__(self, db: SQLiteDB, chunker: Chunker) -> None:
+    def __init__(self, db: SQLiteDB, chunker: Chunker, vector_store: VectorStore | None = None) -> None:
         self.db = db
         self.chunker = chunker
+        self.vector_store = vector_store
 
     def process_file(self, file_path: str, dir_id: str = "", priority: int = 2) -> str | None:
         """处理单个文件：解析 → 分块 → 存储 → 投递 embedding 队列
@@ -49,6 +51,12 @@ class IndexPipeline:
         item_id = existing["item_id"] if existing else None
         if item_id:
             self.db.update_item(item_id, title=title, content=content)
+            # 清理旧 chunk 向量（文件更新后 chunk 数可能减少，残留旧向量会污染搜索结果）
+            if self.vector_store and self.vector_store.available:
+                try:
+                    self.vector_store.delete_by_item_ids([item_id])
+                except Exception:
+                    logger.warning("Failed to delete old vectors for item %s", item_id)
         else:
             item_id = self.db.insert_item(
                 title=title,
