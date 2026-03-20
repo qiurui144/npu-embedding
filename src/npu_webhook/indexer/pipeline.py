@@ -75,7 +75,7 @@ class IndexPipeline:
                     item_id=item_id,
                     chunk_index=section_idx,
                     chunk_text=section_text,
-                    priority=priority,
+                    priority=max(1, priority - 1),  # 比 Level 2 高一级，确保章节先于段落处理
                     level=1,
                     section_idx=section_idx,
                 )

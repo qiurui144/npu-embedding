@@ -97,6 +97,7 @@ def test_pipeline_enqueues_two_levels():
         pipeline.process_file(str(md_file), dir_id="test")
 
         # 验证队列中同时有 level=1 和 level=2 的任务
+        # 与 test_enqueue_embedding_with_level 保持一致，直接查询内部状态
         rows = db.conn.execute(
             "SELECT level FROM embedding_queue GROUP BY level"
         ).fetchall()
