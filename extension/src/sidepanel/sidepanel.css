@@ -80,3 +80,20 @@ body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; color
 
 /* 搜索按钮禁用 */
 .sp-search button:disabled { opacity: 0.5; cursor: default; }
+
+/* FilePage */
+.fp-container { padding: 12px; }
+.fp-dropzone {
+  border: 2px dashed #555; border-radius: 8px;
+  padding: 24px 16px; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.fp-dropzone--active { border-color: #4a9eff; background: rgba(74,158,255,0.05); }
+.fp-hint { font-size: 11px; color: #888; }
+.fp-list { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.fp-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.fp-status--uploading { color: #f0a500; }
+.fp-status--done { color: #4caf50; }
+.fp-status--error { color: #f44336; }
+.fp-meta { color: #888; font-size: 11px; }
+.fp-btn-delete { margin-left: auto; font-size: 11px; color: #f44336; background: none; border: none; cursor: pointer; }
