@@ -32,6 +32,10 @@ dependencies = [
 [project.optional-dependencies]
 npu-intel = ["openvino>=2024.0"]
 npu-amd = ["onnxruntime-directml>=1.19"]
+tray = [
+    "pystray>=0.19",
+    "Pillow>=10",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
