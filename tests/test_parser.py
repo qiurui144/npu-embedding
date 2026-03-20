@@ -17,6 +17,7 @@ def test_parse_bytes_txt():
 
     data = b"First line\nSecond line"
     title, content = parse_bytes(data, "notes.txt")
+    assert title == "First line"
     assert "First line" in content
 
 
@@ -25,4 +26,5 @@ def test_parse_bytes_unsupported_falls_back():
     from npu_webhook.core.parser import parse_bytes
 
     title, content = parse_bytes(b"hello world", "data.unknown")
+    assert title == "hello world"
     assert content  # 不为空

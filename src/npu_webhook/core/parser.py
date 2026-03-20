@@ -134,7 +134,11 @@ def _parse_pdf_bytes(data: bytes, name_stem: str) -> tuple[str, str]:
 
     doc = pymupdf.open(stream=io.BytesIO(data), filetype="pdf")
     title = doc.metadata.get("title", "") or name_stem
-    pages = [page.get_text() for page in doc if page.get_text().strip()]
+    pages = []
+    for page in doc:
+        text = page.get_text()
+        if text.strip():
+            pages.append(text)
     doc.close()
     return title, "\n\n".join(pages)
 
