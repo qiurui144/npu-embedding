@@ -9,6 +9,23 @@ from npu_webhook.db.sqlite_db import SQLiteDB
 
 logger = logging.getLogger(__name__)
 
+INJECTION_BUDGET = 2000  # 默认注入预算（字符数）
+
+
+def _allocate_budget(results: list[dict], budget: int) -> list[dict]:
+    """按 score 加权分配注入预算，防零除。每项最少分配 min(100, budget//len(results)) 字。"""
+    total_score = sum(r.get("score", 0) for r in results)
+    if total_score <= 0:
+        per_item = budget // max(len(results), 1)
+        for r in results:
+            r["inject_content"] = r.get("content", "")[:per_item]
+        return results
+    for r in results:
+        share = r.get("score", 0) / total_score
+        alloc = max(int(budget * share), 100)
+        r["inject_content"] = r.get("content", "")[:alloc]
+    return results
+
 
 class _LRUCache:
     """简单 LRU 缓存（线程不安全，但在单请求链路内使用足够）"""
@@ -187,6 +204,128 @@ class HybridSearchEngine:
             merged = self.reranker.rerank(query, merged, top_k=top_k)
 
         return merged[:top_k]
+
+    def search_relevant(
+        self,
+        query: str,
+        top_k: int = 3,
+        source_types: list[str] | None = None,
+        context: list[str] | None = None,
+        min_score: float = 0.0,
+        injection_budget: int = INJECTION_BUDGET,
+    ) -> list[dict]:
+        """两阶段层级检索：章节锚定 → 段落精排 → 父章节上下文扩展 + 动态预算分配。
+        如果向量引擎不可用，回退到普通 search()。
+        """
+        if not self.vector_store.available:
+            results = self.search(query, top_k=top_k, source_types=source_types,
+                                  context=context, min_score=min_score)
+            return _allocate_budget(results, injection_budget)
+
+        search_query = query
+        if context:
+            ctx_text = " | ".join(c[:150] for c in context[-3:])
+            search_query = f"{ctx_text} || {query}"
+
+        query_embedding = self.vector_store.engine.embed([search_query])[0]  # type: ignore[union-attr]
+
+        # Stage 1: 章节级召回（Level 1）
+        where_l1: dict = {"level": {"$eq": 1}}
+        if source_types:
+            where_l1 = {"$and": [where_l1, {"source_type": {"$in": source_types}}]}
+        section_hits = self.vector_store.chroma.query(query_embedding, top_k=5, where=where_l1)
+
+        candidate_sections: list[int] = []
+        candidate_item_ids: list[str] = []
+        if section_hits and section_hits.get("metadatas"):
+            for meta in section_hits["metadatas"][0]:
+                sidx = meta.get("section_idx", 0)
+                iid = meta.get("item_id", "")
+                if sidx not in candidate_sections:
+                    candidate_sections.append(sidx)
+                if iid not in candidate_item_ids:
+                    candidate_item_ids.append(iid)
+
+        # Stage 2: 段落级精排（Level 2，限定在候选章节内）
+        if candidate_sections:
+            where_l2: dict = {
+                "$and": [
+                    {"level": {"$eq": 2}},
+                    {"section_idx": {"$in": candidate_sections}},
+                ]
+            }
+            if source_types:
+                where_l2["$and"].append({"source_type": {"$in": source_types}})
+        else:
+            # 无章节命中，回退到全 Level 2 搜索
+            where_l2 = {"level": {"$eq": 2}}
+            if source_types:
+                where_l2 = {"$and": [where_l2, {"source_type": {"$in": source_types}}]}
+        chunk_hits = self.vector_store.chroma.query(query_embedding, top_k=top_k * 2, where=where_l2)
+
+        # Stage 3: 上下文扩展（用父章节全文替代截断片段）
+        results: list[dict] = []
+        seen_items: set[str] = set()
+
+        if chunk_hits and chunk_hits.get("ids"):
+            ids = chunk_hits["ids"][0]
+            distances = chunk_hits.get("distances", [[]])[0]
+            metadatas = chunk_hits.get("metadatas", [[]])[0]
+
+            for i, doc_id in enumerate(ids):
+                meta = metadatas[i] if i < len(metadatas) else {}
+                item_id = meta.get("item_id", "")
+                if item_id in seen_items:
+                    continue
+                seen_items.add(item_id)
+
+                score = 1.0 - (distances[i] if i < len(distances) else 0)
+                if score < min_score:
+                    continue
+
+                db_item = self.db.get_item(item_id)
+                if not db_item:
+                    continue
+
+                # 取父章节全文（Level 1，同 section_idx）
+                section_idx = meta.get("section_idx", 0)
+                parent_where = {
+                    "$and": [
+                        {"level": {"$eq": 1}},
+                        {"item_id": {"$eq": item_id}},
+                        {"section_idx": {"$eq": section_idx}},
+                    ]
+                }
+                try:
+                    parent_hits = self.vector_store.chroma.query(
+                        query_embedding, top_k=1, where=parent_where
+                    )
+                    if parent_hits and parent_hits.get("documents") and parent_hits["documents"][0]:
+                        inject_content = parent_hits["documents"][0][0]
+                    else:
+                        inject_content = db_item["content"]
+                except Exception:
+                    inject_content = db_item["content"]
+
+                results.append({
+                    "id": item_id,
+                    "title": db_item["title"],
+                    "content": inject_content,
+                    "source_type": db_item["source_type"],
+                    "url": db_item.get("url"),
+                    "created_at": db_item.get("created_at"),
+                    "score": score,
+                    "section_idx": section_idx,
+                })
+                if len(results) >= top_k:
+                    break
+
+        # 回退：没有层级结果则用普通搜索
+        if not results:
+            results = self.search(query, top_k=top_k, source_types=source_types,
+                                  context=context, min_score=min_score)
+
+        return _allocate_budget(results, injection_budget)
 
     def _rrf_merge(
         self,

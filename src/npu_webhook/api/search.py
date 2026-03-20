@@ -53,14 +53,15 @@ async def search_relevant(req: RelevantRequest) -> SearchResponse:
     if not state.search_engine:
         raise HTTPException(status_code=503, detail="Search engine not initialized")
 
+    from npu_webhook.config import settings as _settings
     results = await asyncio.to_thread(
-        state.search_engine.search,
+        state.search_engine.search_relevant,
         req.query,
         top_k=req.top_k,
         source_types=req.source_types,
         context=req.context,
-        min_score=req.min_score,
-        rerank=True,
+        min_score=req.min_score or 0.0,
+        injection_budget=_settings.search.injection_budget,
     )
 
     # 记录注入事件（追踪哪些知识被注入过）
@@ -78,7 +79,7 @@ async def search_relevant(req: RelevantRequest) -> SearchResponse:
             SearchResult(
                 id=r["id"],
                 title=r.get("title", ""),
-                content=r.get("content", ""),
+                content=r.get("inject_content", r.get("content", "")),
                 score=r.get("score", 0),
                 source_type=r.get("source_type", ""),
                 url=r.get("url"),

@@ -259,3 +259,36 @@ def test_queue_worker_writes_level_metadata():
         assert results["metadatas"][0][0]["section_idx"] == 3
 
         db.close()
+
+
+def test_allocate_budget_weighted():
+    """_allocate_budget 按 score 加权分配，总量不超过预算"""
+    from npu_webhook.core.search import _allocate_budget
+    results = [
+        {"score": 0.8, "content": "A" * 500},
+        {"score": 0.2, "content": "B" * 500},
+    ]
+    allocated = _allocate_budget(results, budget=1000)
+    total = sum(len(r["inject_content"]) for r in allocated)
+    assert total <= 1000
+    # 高分项分配更多
+    assert len(allocated[0]["inject_content"]) > len(allocated[1]["inject_content"])
+
+
+def test_allocate_budget_zero_score_fallback():
+    """total_score=0 时均分而非除零"""
+    from npu_webhook.core.search import _allocate_budget
+    results = [
+        {"score": 0.0, "content": "A" * 600},
+        {"score": 0.0, "content": "B" * 600},
+    ]
+    allocated = _allocate_budget(results, budget=1000)
+    assert all("inject_content" in r for r in allocated)
+
+
+def test_allocate_budget_minimum_per_item():
+    """预算过小时每项至少分配到预算总量"""
+    from npu_webhook.core.search import _allocate_budget
+    results = [{"score": 1.0, "content": "X" * 1000}]
+    allocated = _allocate_budget(results, budget=50)
+    assert len(allocated[0]["inject_content"]) >= 50
