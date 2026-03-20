@@ -252,6 +252,7 @@ class HybridSearchEngine:
                 "$and": [
                     {"level": {"$eq": 2}},
                     {"section_idx": {"$in": candidate_sections}},
+                    {"item_id": {"$in": candidate_item_ids}},  # 限定到候选文档，防止跨文档污染
                 ]
             }
             if source_types:

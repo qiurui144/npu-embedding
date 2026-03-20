@@ -291,4 +291,4 @@ def test_allocate_budget_minimum_per_item():
     from npu_webhook.core.search import _allocate_budget
     results = [{"score": 1.0, "content": "X" * 1000}]
     allocated = _allocate_budget(results, budget=50)
-    assert len(allocated[0]["inject_content"]) >= 50
+    assert len(allocated[0]["inject_content"]) >= 100
