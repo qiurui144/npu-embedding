@@ -28,6 +28,7 @@ class AuthConfig(BaseModel):
 class IngestConfig(BaseModel):
     min_content_length: int = 100
     excluded_domains: list[str] = ["mail.google.com", "web.whatsapp.com"]
+    max_upload_mb: int = 20
 
 
 class LoggingConfig(BaseModel):
@@ -40,6 +41,7 @@ class SearchConfig(BaseModel):
     rrf_k: int = 60  # RRF 常数
     vector_weight: float = 0.6
     fulltext_weight: float = 0.4
+    injection_budget: int = 2000
 
 
 class ChunkConfig(BaseModel):

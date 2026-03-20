@@ -28,6 +28,7 @@ class AppState:
     watcher: DirectoryWatcher | None = None
     queue_worker: EmbeddingQueueWorker | None = None
     cleaner: KnowledgeCleaner | None = None
+    session_upload_ids: dict = field(default_factory=dict)
 
 
 # 全局单例
