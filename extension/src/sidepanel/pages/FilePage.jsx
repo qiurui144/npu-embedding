@@ -2,6 +2,7 @@
 import { h } from 'preact';
 import { useState, useRef } from 'preact/hooks';
 import { api } from '../../shared/api.js';
+import { MSG } from '../../shared/messages.js';
 
 const ALLOWED_TYPES = ['.pdf', '.docx', '.md', '.txt', '.py', '.js', '.ts'];
 const SESSION_ID_KEY = 'npu_session_id';
@@ -40,6 +41,10 @@ export default function FilePage() {
             : f,
         ),
       );
+      // 通知 worker 记录会话上传 ID（用于搜索加权）
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        chrome.runtime.sendMessage({ type: MSG.FILE_UPLOADED, item_id: result.id });
+      }
     } catch (err) {
       setFiles((prev) =>
         prev.map((f) =>

@@ -12,6 +12,9 @@ const api = new API();
 const dedup = new Map();
 const DEDUP_TTL = 60 * 60 * 1000; // 1h
 
+// --- 会话上传文件 ID 集合（用于搜索结果加权） ---
+const sessionUploadedIds = new Set();
+
 // --- 预取缓存 (queryHash -> {results, ts}) ---
 const prefetchCache = new Map();
 const PREFETCH_TTL = 30 * 1000; // 30s，覆盖"打字→发送"时间窗口
@@ -112,17 +115,27 @@ async function handleMessage(msg, sender) {
       // 先查预取缓存，命中则直接返回（<1ms）
       const cacheKey = djb2((msg.query || '') + JSON.stringify(msg.source_types || null));
       const cached = prefetchCache.get(cacheKey);
+      let results;
       if (cached && Date.now() - cached.ts < PREFETCH_TTL) {
         prefetchCache.delete(cacheKey); // 消费后删除
-        return cached.results;
+        results = cached.results;
+      } else {
+        results = await api.searchRelevant({
+          query: msg.query,
+          top_k: msg.top_k || 3,
+          context: msg.context || null,
+          min_score: msg.min_score || 0,
+          source_types: msg.source_types || null,
+        });
       }
-      return api.searchRelevant({
-        query: msg.query,
-        top_k: msg.top_k || 3,
-        context: msg.context || null,
-        min_score: msg.min_score || 0,
-        source_types: msg.source_types || null,
-      });
+      // 会话感知加权：本次会话上传的文件优先
+      if (results && Array.isArray(results.results)) {
+        for (const r of results.results) {
+          if (sessionUploadedIds.has(r.id)) r.score = (r.score || 0) * 1.5;
+        }
+        results.results.sort((a, b) => (b.score || 0) - (a.score || 0));
+      }
+      return results;
     }
 
     case MSG.SAVE_SELECTION:
@@ -170,6 +183,10 @@ async function handleMessage(msg, sender) {
       if (sender.tab) {
         await chrome.sidePanel.open({ tabId: sender.tab.id });
       }
+      return { ok: true };
+
+    case MSG.FILE_UPLOADED:
+      if (msg.item_id) sessionUploadedIds.add(msg.item_id);
       return { ok: true };
 
     default:

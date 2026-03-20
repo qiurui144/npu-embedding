@@ -3,15 +3,17 @@ import { useState } from 'preact/hooks';
 import SearchPage from './pages/SearchPage.jsx';
 import TimelinePage from './pages/TimelinePage.jsx';
 import StatusPage from './pages/StatusPage.jsx';
+import FilePage from './pages/FilePage.jsx';
 import './sidepanel.css';
 
 const TABS = [
   { id: 'search', label: '搜索' },
   { id: 'timeline', label: '时间线' },
+  { id: 'files', label: '文件' },
   { id: 'status', label: '状态' },
 ];
 
-const PAGE_MAP = { search: SearchPage, timeline: TimelinePage, status: StatusPage };
+const PAGE_MAP = { search: SearchPage, timeline: TimelinePage, files: FilePage, status: StatusPage };
 
 function App() {
   const [tab, setTab] = useState('search');

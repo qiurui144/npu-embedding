@@ -71,6 +71,20 @@ export class API {
 
   // --- 索引 ---
   indexStatus() { return this.request('/index/status'); }
+
+  /** 上传原始文件到 /upload（multipart/form-data）*/
+  async uploadFile(file, sessionId = null) {
+    const form = new FormData();
+    form.append('file', file);
+    if (sessionId) form.append('session_id', sessionId);
+    const resp = await fetch(`${this.baseUrl}/upload`, {
+      method: 'POST',
+      body: form,
+      // 不设 Content-Type，让浏览器自动设置 multipart boundary
+    });
+    if (!resp.ok) throw new Error(`Upload error: ${resp.status}`);
+    return resp.json();
+  }
 }
 
 export const api = new API();
