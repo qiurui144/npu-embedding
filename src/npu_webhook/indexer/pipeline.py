@@ -65,20 +65,40 @@ class IndexPipeline:
                 metadata={"file_path": str(path), "file_type": path.suffix},
             )
 
-        # 分块并投递 embedding 队列
-        chunks = self.chunker.chunk(content)
-        for i, chunk_text in enumerate(chunks):
-            self.db.enqueue_embedding(
-                item_id=item_id,
-                chunk_index=i,
-                chunk_text=chunk_text,
-                priority=priority,
-            )
+        # 提取章节（Level 1）
+        sections = self.chunker.extract_sections(content, source_type="file")
+
+        # Level 1：每个章节整体入队（priority=1，level=1）
+        for section_idx, section_text in sections:
+            if section_text.strip():
+                self.db.enqueue_embedding(
+                    item_id=item_id,
+                    chunk_index=section_idx,
+                    chunk_text=section_text,
+                    priority=priority,
+                    level=1,
+                    section_idx=section_idx,
+                )
+
+        # Level 2：每个章节再细分为段落块（priority=priority，level=2）
+        chunk_counter = 0
+        for section_idx, section_text in sections:
+            chunks = self.chunker.chunk(section_text)
+            for chunk_text in chunks:
+                self.db.enqueue_embedding(
+                    item_id=item_id,
+                    chunk_index=chunk_counter,
+                    chunk_text=chunk_text,
+                    priority=priority,
+                    level=2,
+                    section_idx=section_idx,
+                )
+                chunk_counter += 1
 
         # 记录文件索引
         self.db.upsert_indexed_file(dir_id or "manual", str(path), file_hash, item_id)
 
-        logger.info("Indexed file: %s (%d chunks)", path.name, len(chunks))
+        logger.info("Indexed file: %s (%d sections, %d chunks)", path.name, len(sections), chunk_counter)
         return item_id
 
     def scan_directory(self, dir_info: dict) -> int:

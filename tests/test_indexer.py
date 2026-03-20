@@ -71,3 +71,37 @@ def test_pipeline_process_file():
         assert item_id2 == item_id
 
         db.close()
+
+
+def test_pipeline_enqueues_two_levels():
+    """process_file 应同时入队 Level 1（章节）和 Level 2（段落）"""
+    import tempfile
+    from pathlib import Path
+    from npu_webhook.core.chunker import Chunker
+    from npu_webhook.core.vectorstore import VectorStore
+    from npu_webhook.db.chroma_db import ChromaDB
+    from npu_webhook.db.sqlite_db import SQLiteDB
+    from npu_webhook.indexer.pipeline import IndexPipeline
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = SQLiteDB(Path(tmpdir) / "test.db")
+        chroma = ChromaDB(Path(tmpdir) / "chroma")
+        vs = VectorStore(chroma, engine=None)
+        chunker = Chunker()
+        pipeline = IndexPipeline(db, chunker, vs)
+
+        # 创建有两个 ## 章节的 Markdown 文件
+        md_file = Path(tmpdir) / "test.md"
+        md_file.write_text("## 章节一\n内容A " * 50 + "\n\n## 章节二\n内容B " * 50)
+
+        pipeline.process_file(str(md_file), dir_id="test")
+
+        # 验证队列中同时有 level=1 和 level=2 的任务
+        rows = db.conn.execute(
+            "SELECT level FROM embedding_queue GROUP BY level"
+        ).fetchall()
+        levels = {r["level"] for r in rows}
+        assert 1 in levels, "应有 Level 1 章节任务"
+        assert 2 in levels, "应有 Level 2 段落任务"
+
+        db.close()

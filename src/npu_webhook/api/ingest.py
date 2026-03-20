@@ -51,13 +51,33 @@ async def ingest(req: IngestRequest) -> IngestResponse:
 
     # 分块并投递 embedding 队列（P1 近实时）
     if state.chunker:
-        chunks = state.chunker.chunk(req.content)
-        for i, chunk_text in enumerate(chunks):
-            state.db.enqueue_embedding(
-                item_id=item_id,
-                chunk_index=i,
-                chunk_text=chunk_text,
-                priority=1,
-            )
+        sections = state.chunker.extract_sections(req.content, source_type=req.source_type)
+
+        # Level 1: 章节
+        for section_idx, section_text in sections:
+            if section_text.strip():
+                state.db.enqueue_embedding(
+                    item_id=item_id,
+                    chunk_index=section_idx,
+                    chunk_text=section_text,
+                    priority=1,
+                    level=1,
+                    section_idx=section_idx,
+                )
+
+        # Level 2: 段落块
+        chunk_counter = 0
+        for section_idx, section_text in sections:
+            chunks = state.chunker.chunk(section_text)
+            for chunk_text in chunks:
+                state.db.enqueue_embedding(
+                    item_id=item_id,
+                    chunk_index=chunk_counter,
+                    chunk_text=chunk_text,
+                    priority=1,
+                    level=2,
+                    section_idx=section_idx,
+                )
+                chunk_counter += 1
 
     return IngestResponse(id=item_id)
