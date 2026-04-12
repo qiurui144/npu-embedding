@@ -159,7 +159,14 @@ async fn main() {
         .with_state(shared_state);
 
     // NAS 模式安全告警：非 loopback host 且无 TLS 时提醒用户
-    let is_loopback = cli.host == "127.0.0.1" || cli.host == "localhost" || cli.host == "::1";
+    let is_loopback = {
+        use std::net::IpAddr;
+        cli.host == "localhost"
+            || cli.host
+                .parse::<IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false)
+    };
     let has_tls = cli.tls_cert.is_some() && cli.tls_key.is_some();
     if !is_loopback && !has_tls {
         tracing::warn!(

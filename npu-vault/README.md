@@ -78,8 +78,7 @@ openssl req -x509 -newkey rsa:2048 \
   --host 0.0.0.0 \
   --port 18900 \
   --tls-cert cert.pem \
-  --tls-key key.pem \
-  --require-auth
+  --tls-key key.pem
 
 # 手机浏览器: https://your-nas.local:18900/
 # API 请求需要: Authorization: Bearer <session_token>
@@ -145,7 +144,7 @@ Master Password (用户记忆)  +  Device Secret (设备文件, 256-bit 随机)
 
 ## API 端点
 
-所有端点前缀 `/api/v1/`，localhost 访问免认证，远程需 `--require-auth` + Bearer token。
+所有端点前缀 `/api/v1/`，localhost 访问免认证，远程默认开启认证（需 Bearer token），可用 `--no-auth` 禁用。
 
 ### Vault 管理
 
