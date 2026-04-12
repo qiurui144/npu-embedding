@@ -180,7 +180,7 @@ impl Store {
     /// 在单个事务中批量写入 vault_meta（用于 change_password 原子更新）
     pub fn set_meta_batch(&self, entries: &[(&str, &[u8])]) -> Result<()> {
         self.conn.execute_batch("BEGIN")?;
-        let result: Result<()> = (|| {
+        let exec_result: Result<()> = (|| {
             for (key, value) in entries {
                 self.conn.execute(
                     "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?1, ?2)",
@@ -189,9 +189,12 @@ impl Store {
             }
             Ok(())
         })();
-        match result {
+        match exec_result {
             Ok(_) => {
-                self.conn.execute_batch("COMMIT")?;
+                if let Err(e) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(e.into());
+                }
                 Ok(())
             }
             Err(e) => {
