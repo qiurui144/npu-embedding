@@ -24,9 +24,13 @@ struct Cli {
     /// Path to TLS private key (PEM)
     #[arg(long)]
     tls_key: Option<String>,
-    /// Require Bearer token authentication for remote access
-    #[arg(long, default_value = "false")]
+    /// Require Bearer token authentication (default: enabled).
+    /// Use --no-auth to disable for local development only.
+    #[arg(long, default_value = "true")]
     require_auth: bool,
+    /// Disable Bearer token authentication (local dev only, overrides --require-auth)
+    #[arg(long, default_value = "false")]
+    no_auth: bool,
 }
 
 fn is_allowed_origin(s: &str) -> bool {
@@ -73,7 +77,16 @@ async fn main() {
 
     let vault = vault_core::vault::Vault::open_default()
         .expect("Failed to open vault");
-    let shared_state = Arc::new(state::AppState::new(vault, cli.require_auth));
+    let require_auth = if cli.no_auth {
+        tracing::warn!(
+            "⚠  Authentication DISABLED via --no-auth. \
+             Do NOT use in production or on network-accessible hosts."
+        );
+        false
+    } else {
+        cli.require_auth
+    };
+    let shared_state = Arc::new(state::AppState::new(vault, require_auth));
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _req| {
