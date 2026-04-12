@@ -34,21 +34,18 @@ pub struct UnbindQuery {
     pub dir_id: String,
 }
 
-pub async fn bind_directory(
-    State(state): State<SharedState>,
-    Json(body): Json<BindRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
-    let dek = vault.dek_db().map_err(|e| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-    })?;
+/// Validates that a raw path string is:
+/// 1. An absolute path
+/// 2. Exists and is a directory (via canonicalization)
+/// 3. Within the user's home directory
+///
+/// Returns the canonicalized PathBuf on success.
+pub fn validate_bind_path(
+    raw: &str,
+    home: &std::path::Path,
+) -> Result<std::path::PathBuf, (StatusCode, Json<serde_json::Value>)> {
+    let path = std::path::Path::new(raw);
 
-    let path = std::path::Path::new(&body.path);
-
-    // 1. 必须是绝对路径
     if !path.is_absolute() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -56,7 +53,6 @@ pub async fn bind_directory(
         ));
     }
 
-    // 2. 规范化路径（消除 ../）
     let canonical = path.canonicalize().map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -71,14 +67,7 @@ pub async fn bind_directory(
         ));
     }
 
-    // 3. 必须在 home 目录下（防止绑定 /etc、/proc 等系统目录）
-    let home = dirs::home_dir().ok_or_else(|| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "cannot determine home directory"})),
-        )
-    })?;
-    if !canonical.starts_with(&home) {
+    if !canonical.starts_with(home) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -87,6 +76,29 @@ pub async fn bind_directory(
             })),
         ));
     }
+
+    Ok(canonical)
+}
+
+pub async fn bind_directory(
+    State(state): State<SharedState>,
+    Json(body): Json<BindRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let vault = state.vault.lock().unwrap();
+    let dek = vault.dek_db().map_err(|e| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    let home = dirs::home_dir().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+    })?;
+    let canonical = validate_bind_path(&body.path, &home)?;
 
     // 使用规范化后的路径字符串
     let canonical_str = canonical.display().to_string();

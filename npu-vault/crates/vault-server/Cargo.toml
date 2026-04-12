@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+name = "vault_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "npu-vault-server"
 path = "src/main.rs"

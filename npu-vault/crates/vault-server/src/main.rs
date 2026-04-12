@@ -1,6 +1,6 @@
+use vault_server::routes;
+use vault_server::state;
 mod middleware;
-mod routes;
-mod state;
 
 use axum::middleware as axum_mw;
 use axum::routing::{delete, get, post};
