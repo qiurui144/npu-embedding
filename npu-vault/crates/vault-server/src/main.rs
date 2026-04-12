@@ -29,7 +29,7 @@ struct Cli {
     #[arg(long, default_value = "true")]
     require_auth: bool,
     /// Disable Bearer token authentication (local dev only, overrides --require-auth)
-    #[arg(long, default_value = "false")]
+    #[arg(long)]
     no_auth: bool,
 }
 
@@ -83,8 +83,14 @@ async fn main() {
              Do NOT use in production or on network-accessible hosts."
         );
         false
+    } else if !cli.require_auth {
+        tracing::warn!(
+            "⚠  Authentication DISABLED via --require-auth false. \
+             Do NOT use in production or on network-accessible hosts."
+        );
+        false
     } else {
-        cli.require_auth
+        true
     };
     let shared_state = Arc::new(state::AppState::new(vault, require_auth));
 
