@@ -89,7 +89,8 @@ async fn main() {
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
-        ]);
+        ])
+        .allow_credentials(true);
 
     let app = Router::new()
         // Vault endpoints (no guard needed)
@@ -141,8 +142,9 @@ async fn main() {
         .route("/", get(routes::ui::index))
         .route("/ui", get(routes::ui::index))
         // Guard middleware for all other routes
-        .layer(axum_mw::from_fn_with_state(shared_state.clone(), middleware::bearer_auth_guard))
+        // vault_guard added first (inner layer), bearer_auth_guard added second (outer layer, executes first)
         .layer(axum_mw::from_fn_with_state(shared_state.clone(), middleware::vault_guard))
+        .layer(axum_mw::from_fn_with_state(shared_state.clone(), middleware::bearer_auth_guard))
         .layer(cors)
         .with_state(shared_state);
 
