@@ -54,6 +54,7 @@ pub async fn bearer_auth_guard(
     const ALWAYS_AUTH_ENDPOINTS: &[&str] = &[
         "/api/v1/vault/device-secret/export",
         "/api/v1/vault/device-secret/import",
+        "/api/v1/vault/change-password",
     ];
     let is_always_auth = ALWAYS_AUTH_ENDPOINTS.iter().any(|ep| path == *ep);
 
@@ -112,13 +113,15 @@ pub async fn bearer_auth_guard(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn always_auth_endpoints_include_device_secret() {
-        // 验证敏感端点常量包含 device-secret 相关端点
+    fn always_auth_endpoints_include_device_secret_and_change_password() {
+        // 验证敏感端点常量包含 device-secret 相关端点及 change-password
         const ALWAYS_AUTH_ENDPOINTS: &[&str] = &[
             "/api/v1/vault/device-secret/export",
             "/api/v1/vault/device-secret/import",
+            "/api/v1/vault/change-password",
         ];
         assert!(ALWAYS_AUTH_ENDPOINTS.contains(&"/api/v1/vault/device-secret/export"));
         assert!(ALWAYS_AUTH_ENDPOINTS.contains(&"/api/v1/vault/device-secret/import"));
+        assert!(ALWAYS_AUTH_ENDPOINTS.contains(&"/api/v1/vault/change-password"));
     }
 }

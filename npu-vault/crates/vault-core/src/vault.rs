@@ -311,7 +311,7 @@ impl Vault {
         }
 
         // payload 格式：{session_id}:{expires}:{nonce}
-        let parts: Vec<&str> = payload.split(':').collect();
+        let parts: Vec<&str> = payload.splitn(3, ':').collect();
         if parts.len() != 3 {
             return Err(VaultError::SessionInvalid);
         }
