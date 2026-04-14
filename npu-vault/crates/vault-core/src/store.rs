@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS click_events (
 );
 CREATE INDEX IF NOT EXISTS idx_click_item ON click_events(item_id);
 CREATE INDEX IF NOT EXISTS idx_click_created ON click_events(created_at);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id      TEXT NOT NULL,
+    feedback_type TEXT NOT NULL CHECK(feedback_type IN ('relevant','irrelevant','correction')),
+    query        TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_item ON feedback(item_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 "#;
 
 pub struct Store {
@@ -355,6 +365,27 @@ impl Store {
             embedding_pending,
             embedding_done,
         }))
+    }
+
+    pub fn insert_feedback(
+        &self,
+        item_id: &str,
+        feedback_type: &str,
+        query: Option<&str>,
+    ) -> Result<i64> {
+        let valid_types = ["relevant", "irrelevant", "correction"];
+        if !valid_types.contains(&feedback_type) {
+            return Err(VaultError::InvalidInput(format!(
+                "invalid feedback_type: {feedback_type}"
+            )));
+        }
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+        self.conn.execute(
+            "INSERT INTO feedback (item_id, feedback_type, query, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![item_id, feedback_type, query, now],
+        )?;
+        Ok(self.conn.last_insert_rowid())
     }
 
     /// 测试辅助：直接设置 updated_at 时间戳
@@ -847,6 +878,15 @@ pub struct ItemStats {
     pub embedding_done: i64,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct FeedbackEntry {
+    pub id: i64,
+    pub item_id: String,
+    pub feedback_type: String,
+    pub query: Option<String>,
+    pub created_at: String,
+}
+
 /// Embedding 队列任务
 #[derive(Debug)]
 pub struct QueueTask {
@@ -1158,5 +1198,26 @@ mod tests {
         let store = Store::open_memory().unwrap();
         let result = store.get_item_stats("nonexistent-id").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn insert_feedback_valid() {
+        let store = Store::open_memory().unwrap();
+        let id = store.insert_feedback("item-1", "relevant", Some("my query")).unwrap();
+        assert!(id > 0);
+    }
+
+    #[test]
+    fn insert_feedback_invalid_type() {
+        let store = Store::open_memory().unwrap();
+        let result = store.insert_feedback("item-1", "bad_type", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn insert_feedback_no_query() {
+        let store = Store::open_memory().unwrap();
+        let id = store.insert_feedback("item-1", "irrelevant", None).unwrap();
+        assert!(id > 0);
     }
 }

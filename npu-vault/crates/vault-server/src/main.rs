@@ -119,6 +119,7 @@ async fn main() {
         .route("/api/v1/chat/history", get(routes::chat::chat_history))
         // Ingest + Items + Search
         .route("/api/v1/ingest", post(routes::ingest::ingest))
+        .route("/api/v1/feedback", post(routes::feedback::submit_feedback))
         .route("/api/v1/items", get(routes::items::list_items))
         .route("/api/v1/items/stale", get(routes::items::list_stale_items))
         .route("/api/v1/items/{id}", get(routes::items::get_item).delete(routes::items::delete_item).patch(routes::items::update_item))
