@@ -151,7 +151,17 @@ pub async fn chat(
         let title: String = body.message.chars().take(50).collect();
         // 取已有或新建 session
         let sid = match &body.session_id {
-            Some(id) => id.clone(),
+            Some(id) => {
+                // 验证 session 存在；不存在则自动创建（保证 append_message 外键约束成功）
+                match vault.store().get_conversation_by_id(&dek, id) {
+                    Ok(Some(_)) => id.clone(),
+                    _ => {
+                        tracing::warn!("session_id {id} not found, creating new session");
+                        vault.store().create_conversation(&dek, &title)
+                            .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+                    }
+                }
+            }
             None => vault.store().create_conversation(&dek, &title)
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
         };
