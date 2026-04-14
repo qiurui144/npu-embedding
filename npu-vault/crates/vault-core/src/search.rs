@@ -126,7 +126,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 /// 对 RRF 一阶结果进行余弦相似度二次排序。
 ///
-/// 当 query 向量可用且结果集不超过 `RERANK_TOP_K_THRESHOLD` 时调用。
+/// 当 query 向量可用且结果集实际数量不超过 `RERANK_TOP_K_THRESHOLD` 时调用。
 /// 原地修改 `results` 的 `score` 字段并重新排序。
 pub fn rerank(
     query_vec: &[f32],
@@ -205,7 +205,7 @@ pub fn search_with_context(
             results.sort_by(|a, b| b.score.partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal));
         }
-    } else if params.intermediate_k <= RERANK_TOP_K_THRESHOLD {
+    } else if results.len() <= RERANK_TOP_K_THRESHOLD {
         if let Some(qvec) = &query_vec {
             if let Some(vecs) = ctx.vectors {
                 rerank(qvec, &mut results, vecs);

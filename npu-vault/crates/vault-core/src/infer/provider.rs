@@ -24,6 +24,8 @@ pub fn build_session(model_path: &Path) -> Result<Session> {
             .map_err(|e| VaultError::Crypto(format!("ort with_execution_providers: {e}")))?
             .commit_from_file(model_path)
             .map_err(|e| VaultError::Crypto(format!("ort commit_from_file: {e}")))?,
+        // IntelNpu / IntelIgpu → OpenVINO EP；AmdNpu → DirectML EP
+        // 待 ort features 添加 "openvino" / "directml" 后激活
         _ => session_builder
             .with_execution_providers([CPUExecutionProvider::default().build()])
             .map_err(|e| VaultError::Crypto(format!("ort with_execution_providers: {e}")))?
