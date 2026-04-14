@@ -7,7 +7,7 @@ use vault_core::classifier::Classifier;
 use vault_core::clusterer::ClusterSnapshot;
 use vault_core::embed::{EmbeddingProvider, OllamaProvider};
 use vault_core::index::FulltextIndex;
-use vault_core::llm::{LlmProvider, OllamaLlmProvider};
+use vault_core::llm::{LlmProvider, OllamaLlmProvider, OpenAiLlmProvider};
 use vault_core::tag_index::TagIndex;
 use vault_core::taxonomy::Taxonomy;
 use vault_core::vault::Vault;
@@ -124,10 +124,47 @@ impl AppState {
             }
         }
 
-        // LLM auto-detect (may fail if no chat model installed)
-        if let Ok(llm) = OllamaLlmProvider::auto_detect() {
-            let llm_arc: Arc<dyn LlmProvider> = Arc::new(llm);
+        // LLM 三级优先级：1. 配置文件 llm.endpoint  2. Ollama 自动探测  3. 无 LLM
+        let llm_result: Option<Arc<dyn LlmProvider>> = {
+            // 级别 1：读取 settings 中的 llm 配置
+            let configured_llm = {
+                let vault_guard = self.vault.lock().unwrap();
+                vault_guard.store().get_meta("app_settings").ok().flatten()
+                    .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+                    .and_then(|settings| {
+                        let endpoint = settings.get("llm")
+                            .and_then(|l| l.get("endpoint"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let api_key = settings.get("llm")
+                            .and_then(|l| l.get("api_key"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let model = settings.get("llm")
+                            .and_then(|l| l.get("model"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("gpt-4o-mini")
+                            .to_string();
+                        endpoint.map(|ep| {
+                            tracing::info!("LLM: using configured endpoint {ep}");
+                            Arc::new(OpenAiLlmProvider::new(&ep, &api_key, &model))
+                                as Arc<dyn LlmProvider>
+                        })
+                    })
+            };
 
+            // 级别 2：Ollama 自动探测
+            configured_llm.or_else(|| {
+                OllamaLlmProvider::auto_detect().ok().map(|llm| {
+                    tracing::info!("LLM: using Ollama auto-detect");
+                    Arc::new(llm) as Arc<dyn LlmProvider>
+                })
+            })
+            // 级别 3：None（Chat 功能禁用）
+        };
+
+        if let Some(llm_arc) = llm_result {
             let mut tax = Taxonomy::default();
             if let Ok(plugins) = Taxonomy::load_builtin_plugins() {
                 for p in plugins {

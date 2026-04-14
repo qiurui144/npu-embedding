@@ -193,11 +193,16 @@ pub async fn chat(
     })))
 }
 
-/// GET /api/v1/chat/history -- 对话历史（source_type=ai_chat 的 items）
+/// GET /api/v1/chat/history -- 对话历史（从 conversations 表分页获取）
 pub async fn chat_history(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "vault lock"})),
+        )
+    })?;
     let _ = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,
@@ -205,21 +210,21 @@ pub async fn chat_history(
         )
     })?;
 
-    let items = vault.store().list_items(50, 0).map_err(|e| {
+    let sessions = vault.store().list_conversations(50, 0).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
         )
     })?;
 
-    let chat_items: Vec<serde_json::Value> = items
+    let chat_items: Vec<serde_json::Value> = sessions
         .iter()
-        .filter(|i| i.source_type == "ai_chat")
-        .map(|i| {
+        .map(|s| {
             serde_json::json!({
-                "id": i.id,
-                "title": i.title,
-                "created_at": i.created_at,
+                "id": s.id,
+                "title": s.title,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
             })
         })
         .collect();
