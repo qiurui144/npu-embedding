@@ -164,8 +164,12 @@ pub async fn chat(
                 relevance: k.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
             })
             .collect();
-        let _ = vault.store().append_message(&dek, &sid, "user", &body.message, &[]);
-        let _ = vault.store().append_message(&dek, &sid, "assistant", &response, &citations_for_session);
+        if let Err(e) = vault.store().append_message(&dek, &sid, "user", &body.message, &[]) {
+            tracing::warn!("failed to persist user message to session {sid}: {e}");
+        }
+        if let Err(e) = vault.store().append_message(&dek, &sid, "assistant", &response, &citations_for_session) {
+            tracing::warn!("failed to persist assistant message to session {sid}: {e}");
+        }
         sid
     };
 

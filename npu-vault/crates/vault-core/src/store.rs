@@ -911,6 +911,23 @@ impl Store {
         self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
         Ok(())
     }
+
+    pub fn get_conversation_by_id(&self, conv_id: &str) -> Result<Option<ConversationSummary>> {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?1",
+                params![conv_id],
+                |row| Ok(ConversationSummary {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                }),
+            )
+            .optional()
+            .map_err(VaultError::Database)
+    }
 }
 
 // --- 数据结构 ---
@@ -1039,7 +1056,7 @@ pub struct IndexedFileRow {
     pub item_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationSummary {
     pub id: String,
     pub title: String,

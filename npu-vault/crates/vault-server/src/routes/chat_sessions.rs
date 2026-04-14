@@ -54,13 +54,13 @@ pub async fn get_session(
     let dek = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
-    let all = vault
+    let summary = vault
         .store()
-        .list_conversations(1000, 0)
-        .map_err(|e| err_500(&e.to_string()))?;
-    let summary = all.into_iter().find(|s| s.id == session_id).ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"})))
-    })?;
+        .get_conversation_by_id(&session_id)
+        .map_err(|e| err_500(&e.to_string()))?
+        .ok_or_else(|| {
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"})))
+        })?;
     let messages = vault
         .store()
         .get_conversation_messages(&dek, &session_id)
