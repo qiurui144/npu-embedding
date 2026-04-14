@@ -1221,3 +1221,253 @@ mod tests {
         assert!(id > 0);
     }
 }
+
+#[cfg(test)]
+mod tests_dir {
+    use super::*;
+
+    fn open_store() -> Store {
+        Store::open_memory().unwrap()
+    }
+
+    #[test]
+    fn test_bind_directory_returns_id() {
+        let store = open_store();
+        let id = store.bind_directory("/tmp/docs", true, &["md", "txt"]).unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn test_list_bound_directories_after_bind() {
+        let store = open_store();
+        store.bind_directory("/tmp/docs", true, &["md"]).unwrap();
+        let dirs = store.list_bound_directories().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].path, "/tmp/docs");
+    }
+
+    #[test]
+    fn test_bind_multiple_directories() {
+        let store = open_store();
+        store.bind_directory("/tmp/a", false, &["txt"]).unwrap();
+        store.bind_directory("/tmp/b", true, &["md"]).unwrap();
+        let dirs = store.list_bound_directories().unwrap();
+        assert_eq!(dirs.len(), 2);
+    }
+
+    #[test]
+    fn test_unbind_directory_marks_inactive() {
+        let store = open_store();
+        let id = store.bind_directory("/tmp/docs", true, &["md"]).unwrap();
+        store.unbind_directory(&id).unwrap();
+        let dirs = store.list_bound_directories().unwrap();
+        assert_eq!(dirs.len(), 0);
+    }
+
+    #[test]
+    fn test_unbind_nonexistent_returns_err() {
+        let store = open_store();
+        let result = store.unbind_directory("nonexistent-id");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_dir_last_scan() {
+        let store = open_store();
+        let id = store.bind_directory("/tmp/docs", false, &["md"]).unwrap();
+        store.update_dir_last_scan(&id).unwrap();
+        let dirs = store.list_bound_directories().unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].last_scan.is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests_indexed_files {
+    use super::*;
+
+    fn open_store() -> Store {
+        Store::open_memory().unwrap()
+    }
+
+    fn insert_test_item(store: &Store) -> String {
+        let dek = crate::crypto::Key32::generate();
+        store
+            .insert_item(&dek, "test title", "test content", None, "note", None, None)
+            .unwrap()
+    }
+
+    #[test]
+    fn test_get_indexed_file_returns_none_for_unknown() {
+        let store = open_store();
+        let result = store.get_indexed_file("/nonexistent.md").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_upsert_indexed_file_insert() {
+        let store = open_store();
+        let dir_id = store.bind_directory("/tmp/docs", false, &["md"]).unwrap();
+        let item_id = insert_test_item(&store);
+        store
+            .upsert_indexed_file(&dir_id, "/tmp/docs/note.md", "abc123", &item_id)
+            .unwrap();
+        let row = store.get_indexed_file("/tmp/docs/note.md").unwrap();
+        assert!(row.is_some());
+        let row = row.unwrap();
+        assert_eq!(row.file_hash, "abc123");
+        assert_eq!(row.item_id.as_deref(), Some(item_id.as_str()));
+    }
+
+    #[test]
+    fn test_upsert_indexed_file_updates_hash() {
+        let store = open_store();
+        let dir_id = store.bind_directory("/tmp/docs", false, &["md"]).unwrap();
+        let item_id = insert_test_item(&store);
+        store
+            .upsert_indexed_file(&dir_id, "/tmp/docs/note.md", "v1", &item_id)
+            .unwrap();
+        store
+            .upsert_indexed_file(&dir_id, "/tmp/docs/note.md", "v2", &item_id)
+            .unwrap();
+        let row = store
+            .get_indexed_file("/tmp/docs/note.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.file_hash, "v2");
+    }
+}
+
+#[cfg(test)]
+mod tests_embed_queue {
+    use super::*;
+
+    fn open_store() -> Store {
+        Store::open_memory().unwrap()
+    }
+
+    fn insert_test_item(store: &Store) -> String {
+        let dek = crate::crypto::Key32::generate();
+        store
+            .insert_item(&dek, "title", "content", None, "note", None, None)
+            .unwrap()
+    }
+
+    #[test]
+    fn test_enqueue_embedding_adds_to_queue() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk text", 1, 1, 0)
+            .unwrap();
+        assert_eq!(store.pending_embedding_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_dequeue_embeddings_returns_tasks() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk A", 1, 1, 0)
+            .unwrap();
+        store
+            .enqueue_embedding(&item_id, 1, "chunk B", 1, 2, 0)
+            .unwrap();
+        let tasks = store.dequeue_embeddings(10).unwrap();
+        assert_eq!(tasks.len(), 2);
+        // dequeue 后状态变为 processing，pending 计数应为 0
+        assert_eq!(store.pending_embedding_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_dequeue_respects_batch_size() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        for i in 0..5 {
+            store
+                .enqueue_embedding(&item_id, i, &format!("chunk {i}"), 1, 1, 0)
+                .unwrap();
+        }
+        let tasks = store.dequeue_embeddings(3).unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(store.pending_embedding_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_mark_embedding_done_removes_from_active() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk", 1, 1, 0)
+            .unwrap();
+        let tasks = store.dequeue_embeddings(1).unwrap();
+        store.mark_embedding_done(tasks[0].id).unwrap();
+        // done 状态不再是 pending 或 processing，再次 dequeue 应为空
+        let re_tasks = store.dequeue_embeddings(10).unwrap();
+        assert_eq!(re_tasks.len(), 0);
+    }
+
+    #[test]
+    fn test_mark_embedding_failed_retries_within_max() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk", 1, 1, 0)
+            .unwrap();
+        let tasks = store.dequeue_embeddings(1).unwrap();
+        // max_attempts=3，第一次失败后 attempts=1 < 3，应重新变为 pending
+        store.mark_embedding_failed(tasks[0].id, 3).unwrap();
+        assert_eq!(store.pending_embedding_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_mark_embedding_failed_abandons_after_max() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk", 1, 1, 0)
+            .unwrap();
+        // 连续失败 3 次（max_attempts=3），第3次后状态变为 abandoned
+        for _ in 0..3 {
+            let tasks = store.dequeue_embeddings(1).unwrap();
+            if tasks.is_empty() {
+                break;
+            }
+            store.mark_embedding_failed(tasks[0].id, 3).unwrap();
+        }
+        assert_eq!(store.pending_embedding_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_mark_task_pending_restores_processing() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        store
+            .enqueue_embedding(&item_id, 0, "chunk", 1, 1, 0)
+            .unwrap();
+        let tasks = store.dequeue_embeddings(1).unwrap();
+        // dequeue 后变为 processing，pending 计数为 0
+        assert_eq!(store.pending_embedding_count().unwrap(), 0);
+        store.mark_task_pending(tasks[0].id).unwrap();
+        assert_eq!(store.pending_embedding_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_checkpoint_does_not_error() {
+        let store = open_store();
+        // open_memory 使用内存数据库，wal_checkpoint 是 no-op 但不应报错
+        store.checkpoint().unwrap();
+    }
+
+    #[test]
+    fn test_enqueue_chunk_text_preserved() {
+        let store = open_store();
+        let item_id = insert_test_item(&store);
+        let text = "Unicode text: 中文 \u{1F511}";
+        store
+            .enqueue_embedding(&item_id, 0, text, 1, 1, 0)
+            .unwrap();
+        let tasks = store.dequeue_embeddings(1).unwrap();
+        assert_eq!(tasks[0].chunk_text, text);
+    }
+}
