@@ -1,6 +1,7 @@
 // npu-vault/crates/vault-core/src/store.rs
 
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::crypto::{self, Key32};
@@ -95,6 +96,24 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_item ON feedback(item_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+    content         BLOB NOT NULL,
+    citations       TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id
+    ON conversation_messages(conversation_id);
 "#;
 
 pub struct Store {
@@ -799,6 +818,99 @@ impl Store {
         }
         Ok(results)
     }
+
+    // ── Conversation Session CRUD ─────────────────────────────────────────────
+
+    pub fn create_conversation(&self, _dek: &Key32, title: &str) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        self.conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+            params![id, title, now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn list_conversations(&self, limit: usize, offset: usize) -> Result<Vec<ConversationSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM conversations
+             ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
+            Ok(ConversationSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(VaultError::Database)
+    }
+
+    pub fn get_conversation_messages(&self, dek: &Key32, conv_id: &str) -> Result<Vec<ConvMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, content, citations, created_at
+             FROM conversation_messages
+             WHERE conversation_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![conv_id], |row| {
+            let enc_content: Vec<u8> = row.get(2)?;
+            let citations_json: Option<String> = row.get(3)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                enc_content,
+                citations_json,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, role, enc_content, citations_json, created_at) = row.map_err(VaultError::Database)?;
+            let content = String::from_utf8(crypto::decrypt(dek, &enc_content)?)
+                .unwrap_or_default();
+            let citations: Vec<Citation> = citations_json
+                .and_then(|j| serde_json::from_str::<Vec<Citation>>(&j).ok())
+                .unwrap_or_default();
+            results.push(ConvMessage { id, role, content, citations, created_at });
+        }
+        Ok(results)
+    }
+
+    pub fn append_message(
+        &self,
+        dek: &Key32,
+        conv_id: &str,
+        role: &str,
+        content: &str,
+        citations: &[Citation],
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let enc = crypto::encrypt(dek, content.as_bytes())?;
+        let citations_json = if citations.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(citations).unwrap_or_default())
+        };
+        self.conn.execute(
+            "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, conv_id, role, enc, citations_json, now],
+        )?;
+        // Update conversation updated_at
+        self.conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+        Ok(id)
+    }
+
+    pub fn delete_conversation(&self, conv_id: &str) -> Result<()> {
+        // CASCADE 会自动删 conversation_messages
+        self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
+        Ok(())
+    }
 }
 
 // --- 数据结构 ---
@@ -925,6 +1037,30 @@ pub struct IndexedFileRow {
     pub path: String,
     pub file_hash: String,
     pub item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationSummary {
+    pub id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Citation {
+    pub item_id: String,
+    pub title: String,
+    pub relevance: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConvMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub citations: Vec<Citation>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
@@ -1219,6 +1355,59 @@ mod tests {
         let store = Store::open_memory().unwrap();
         let id = store.insert_feedback("item-1", "irrelevant", None).unwrap();
         assert!(id > 0);
+    }
+
+    #[test]
+    fn test_create_and_list_conversations() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let id1 = store.create_conversation(&dek, "第一个会话").unwrap();
+        let _id2 = store.create_conversation(&dek, "第二个会话").unwrap();
+        let list = store.list_conversations(10, 0).unwrap();
+        assert_eq!(list.len(), 2);
+        let ids: Vec<&str> = list.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&id1.as_str()));
+    }
+
+    #[test]
+    fn test_append_and_get_messages() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let conv_id = store.create_conversation(&dek, "测试会话").unwrap();
+        store.append_message(&dek, &conv_id, "user", "你好", &[]).unwrap();
+        store.append_message(&dek, &conv_id, "assistant", "你好！有什么可以帮你的？", &[]).unwrap();
+        let msgs = store.get_conversation_messages(&dek, &conv_id).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].content, "你好");
+        assert_eq!(msgs[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_delete_conversation_cascades() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let conv_id = store.create_conversation(&dek, "待删除").unwrap();
+        store.append_message(&dek, &conv_id, "user", "消息内容", &[]).unwrap();
+        store.delete_conversation(&conv_id).unwrap();
+        let msgs = store.get_conversation_messages(&dek, &conv_id).unwrap();
+        assert!(msgs.is_empty());
+        let list = store.list_conversations(10, 0).unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn test_citations_json_roundtrip() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let conv_id = store.create_conversation(&dek, "带引用").unwrap();
+        let citations = vec![
+            Citation { item_id: "abc".to_string(), title: "文档A".to_string(), relevance: 0.9 },
+        ];
+        store.append_message(&dek, &conv_id, "assistant", "回答内容", &citations).unwrap();
+        let msgs = store.get_conversation_messages(&dek, &conv_id).unwrap();
+        assert_eq!(msgs[0].citations.len(), 1);
+        assert_eq!(msgs[0].citations[0].item_id, "abc");
     }
 }
 
