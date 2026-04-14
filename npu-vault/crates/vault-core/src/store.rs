@@ -313,6 +313,50 @@ impl Store {
         Ok(items)
     }
 
+    pub fn get_item_stats(&self, id: &str) -> Result<Option<ItemStats>> {
+        let exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE id = ?1 AND is_deleted = 0",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Ok(None);
+        }
+
+        let (created_at, updated_at): (String, String) = self.conn.query_row(
+            "SELECT created_at, updated_at FROM items WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let chunk_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM embed_queue WHERE item_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+
+        let embedding_pending: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM embed_queue WHERE item_id = ?1 AND status = 'pending'",
+            params![id],
+            |row| row.get(0),
+        )?;
+
+        let embedding_done: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM embed_queue WHERE item_id = ?1 AND status = 'done'",
+            params![id],
+            |row| row.get(0),
+        )?;
+
+        Ok(Some(ItemStats {
+            id: id.to_string(),
+            created_at,
+            updated_at,
+            chunk_count,
+            embedding_pending,
+            embedding_done,
+        }))
+    }
+
     /// 测试辅助：直接设置 updated_at 时间戳
     #[cfg(test)]
     pub fn set_updated_at(&self, id: &str, ts: &str) -> Result<()> {
@@ -793,6 +837,16 @@ pub struct StaleItemSummary {
     pub created_at: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ItemStats {
+    pub id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub chunk_count: i64,
+    pub embedding_pending: i64,
+    pub embedding_done: i64,
+}
+
 /// Embedding 队列任务
 #[derive(Debug)]
 pub struct QueueTask {
@@ -1086,5 +1140,23 @@ mod tests {
         let store = Store::open_memory().unwrap();
         let stale = store.list_stale_items(30, 50).unwrap();
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn get_item_stats_basic() {
+        let store = Store::open_memory().unwrap();
+        let dek = crate::crypto::Key32::generate();
+        let id = store.insert_item(&dek, "Test", "content", None, "note", None, None).unwrap();
+        let stats = store.get_item_stats(&id).unwrap().unwrap();
+        assert_eq!(stats.id, id);
+        assert!(stats.chunk_count >= 0);
+        assert_eq!(stats.embedding_pending + stats.embedding_done, stats.chunk_count);
+    }
+
+    #[test]
+    fn get_item_stats_missing() {
+        let store = Store::open_memory().unwrap();
+        let result = store.get_item_stats("nonexistent-id").unwrap();
+        assert!(result.is_none());
     }
 }

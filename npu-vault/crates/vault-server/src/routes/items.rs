@@ -103,3 +103,18 @@ pub async fn list_stale_items(
     let count = items.len();
     Ok(Json(serde_json::json!({"items": items, "count": count, "days": params.days})))
 }
+
+pub async fn get_item_stats(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let vault = state.vault.lock().unwrap();
+    let _ = vault.dek_db().map_err(|e| {
+        (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
+    })?;
+    match vault.store().get_item_stats(&id) {
+        Ok(Some(stats)) => Ok(Json(serde_json::json!(stats))),
+        Ok(None) => Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"})))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))),
+    }
+}
