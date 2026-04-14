@@ -2,6 +2,32 @@
 
 use crate::error::{Result, VaultError};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+/// 共享 Runtime，复用于所有 Ollama embedding 同步调用（与 llm.rs 中 llm_rt 同理）
+fn embed_rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("embed-rt")
+            .enable_all()
+            .build()
+            .expect("embed tokio runtime init failed")
+    })
+}
+
+/// 在独立线程中运行 async future，复用共享 embed Runtime，
+/// 确保不在主 tokio 上下文中直接 block_on。
+fn embed_block_on<F, T>(f: F) -> crate::error::Result<T>
+where
+    F: std::future::Future<Output = crate::error::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::spawn(move || embed_rt().block_on(f))
+        .join()
+        .map_err(|_| VaultError::Crypto("embed worker thread panicked".into()))?
+}
 
 /// Embedding provider trait
 pub trait EmbeddingProvider: Send + Sync {
@@ -73,24 +99,21 @@ impl OllamaProvider {
 impl EmbeddingProvider for OllamaProvider {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let url = format!("{}/api/embed", self.base_url);
-        let body = EmbedRequest {
-            model: &self.model,
-            input: texts.to_vec(),
-        };
+        let model = self.model.clone();
+        let input: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let client = self.client.clone();
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| VaultError::Crypto(format!("tokio runtime: {e}")))?;
-
-        let response = rt.block_on(async {
-            self.client
+        let response = embed_block_on(async move {
+            let body = serde_json::json!({"model": model, "input": input});
+            client
                 .post(&url)
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| VaultError::Crypto(format!("ollama request: {e}")))?
+                .map_err(|e| VaultError::LlmUnavailable(format!("ollama embed request: {e}")))?
                 .json::<EmbedResponse>()
                 .await
-                .map_err(|e| VaultError::Crypto(format!("ollama response: {e}")))
+                .map_err(|e| VaultError::LlmUnavailable(format!("ollama embed response: {e}")))
         })?;
 
         Ok(response.embeddings)

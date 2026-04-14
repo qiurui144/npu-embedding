@@ -62,15 +62,27 @@ impl OrtRerankProvider {
         ).map_err(|e| VaultError::Crypto(format!("token_type tensor: {e}")))?;
 
         // 3. ONNX 推理
+        // 部分 reranker 变体（如 DeBERTa 系列）不包含 token_type_ids 输入，
+        // 根据 session.inputs 动态决定是否传入，避免 OrtError: unknown input name
         let mut session = self.session.lock()
             .map_err(|_| VaultError::Crypto("session mutex poisoned".into()))?;
-        let mut outputs = session
-            .run(ort::inputs! {
-                "input_ids" => ids_tensor,
-                "attention_mask" => masks_tensor,
-                "token_type_ids" => token_type_tensor
-            })
-            .map_err(|e| VaultError::Crypto(format!("ort run: {e}")))?;
+        let has_token_type_ids = session.inputs().iter().any(|i| i.name() == "token_type_ids");
+        let mut outputs = if has_token_type_ids {
+            session
+                .run(ort::inputs! {
+                    "input_ids" => ids_tensor,
+                    "attention_mask" => masks_tensor,
+                    "token_type_ids" => token_type_tensor
+                })
+                .map_err(|e| VaultError::Crypto(format!("ort run: {e}")))?
+        } else {
+            session
+                .run(ort::inputs! {
+                    "input_ids" => ids_tensor,
+                    "attention_mask" => masks_tensor
+                })
+                .map_err(|e| VaultError::Crypto(format!("ort run (no token_type_ids): {e}")))?
+        };
 
         // 4. 取 logits 输出（bge-reranker-v2-m3 标准输出名为 "logits"），shape: [1, 1]
         // 不使用 keys().next() 以避免 HashMap 迭代顺序不确定问题

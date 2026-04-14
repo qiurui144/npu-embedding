@@ -112,6 +112,10 @@ impl FulltextIndex {
 
     /// BM25 搜索 → Vec<(item_id, score)>
     pub fn search(&self, query_str: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
+        // 空查询直接返回：避免 tantivy AllQuery 全量扫描
+        if query_str.trim().is_empty() {
+            return Ok(vec![]);
+        }
         let reader = self.index.reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()

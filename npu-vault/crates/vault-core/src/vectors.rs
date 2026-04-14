@@ -139,7 +139,9 @@ impl VectorIndex {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        self.index.save(path.to_str().unwrap())
+        let path_str = path.to_str()
+            .ok_or_else(|| VaultError::Crypto("non-UTF8 path in save".into()))?;
+        self.index.save(path_str)
             .map_err(|e| VaultError::Crypto(format!("usearch save: {e}")))?;
         // 保存 meta
         let meta_path = path.with_extension("meta.json");
@@ -161,7 +163,9 @@ impl VectorIndex {
         };
         let index = usearch::new_index(&options)
             .map_err(|e| VaultError::Crypto(format!("usearch init: {e}")))?;
-        index.load(path.to_str().unwrap())
+        let path_str = path.to_str()
+            .ok_or_else(|| VaultError::Crypto("non-UTF8 path in load".into()))?;
+        index.load(path_str)
             .map_err(|e| VaultError::Crypto(format!("usearch load: {e}")))?;
 
         let meta_path = path.with_extension("meta.json");
