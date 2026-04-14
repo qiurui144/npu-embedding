@@ -929,9 +929,10 @@
     };
     ws.onclose = function() {
       document.getElementById('prog-status').textContent = '已断开，3 秒后重连…';
+      clearTimeout(retryTimer);
       retryTimer = setTimeout(connect, 3000);
     };
-    ws.onerror = function() { ws.close(); };
+    ws.onerror = function() { /* 浏览器规范保证 onerror 后自动触发 onclose */ };
   }
   connect();
   window.addEventListener('beforeunload', function() {
