@@ -896,10 +896,11 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let enc = crypto::encrypt(dek, content.as_bytes())?;
-        let citations_json = if citations.is_empty() {
+        let citations_json: Option<String> = if citations.is_empty() {
             None
         } else {
-            Some(serde_json::to_string(citations).unwrap_or_default())
+            Some(serde_json::to_string(citations)
+                .map_err(|e| VaultError::Json(e))?)
         };
         self.conn.execute(
             "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
@@ -912,6 +913,52 @@ impl Store {
             params![now, conv_id],
         )?;
         Ok(id)
+    }
+
+    /// 在单一事务中写入 user + assistant 一对消息，保证原子性。
+    /// 若 user 写入成功但 assistant 失败，事务回滚，两条均不写入。
+    pub fn append_conversation_turn(
+        &self,
+        dek: &Key32,
+        conv_id: &str,
+        user_content: &str,
+        assistant_content: &str,
+        citations: &[Citation],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        // user message
+        let user_enc = crypto::encrypt(dek, user_content.as_bytes())?;
+        let user_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
+             VALUES (?1, ?2, 'user', ?3, NULL, ?4)",
+            params![user_id, conv_id, user_enc, now],
+        )?;
+
+        // assistant message
+        let asst_enc = crypto::encrypt(dek, assistant_content.as_bytes())?;
+        let asst_id = uuid::Uuid::new_v4().to_string();
+        let citations_json: Option<String> = if citations.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(citations).map_err(VaultError::Json)?)
+        };
+        tx.execute(
+            "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
+             VALUES (?1, ?2, 'assistant', ?3, ?4, ?5)",
+            params![asst_id, conv_id, asst_enc, citations_json, now],
+        )?;
+
+        // update conversation timestamp
+        tx.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn delete_conversation(&self, conv_id: &str) -> Result<()> {
