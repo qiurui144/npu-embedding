@@ -1,7 +1,12 @@
 // npu-vault/crates/vault-core/src/search.rs
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use crate::embed::EmbeddingProvider;
+use crate::index::FulltextIndex;
+use crate::infer::RerankProvider;
+use crate::store::Store;
 use crate::vectors::VectorIndex;
 
 /// RRF 参数
@@ -22,6 +27,34 @@ pub struct SearchResult {
     pub content: String,
     pub source_type: String,
     pub inject_content: Option<String>,
+}
+
+/// 三阶段搜索参数
+#[derive(Debug, Clone)]
+pub struct SearchParams {
+    pub top_k: usize,
+    /// 粗召回数量（向量+全文各取此数量后 RRF 融合）
+    pub initial_k: usize,
+    /// Reranker 入口前的候选数量
+    pub intermediate_k: usize,
+}
+
+impl SearchParams {
+    pub fn with_defaults(top_k: usize) -> Self {
+        let initial_k = (top_k * 5).clamp(20, 100);
+        let intermediate_k = (top_k * 2).clamp(top_k, 40);
+        Self { top_k, initial_k, intermediate_k }
+    }
+}
+
+/// 搜索上下文：持有所有搜索所需组件的引用
+pub struct SearchContext<'a> {
+    pub fulltext: Option<&'a FulltextIndex>,
+    pub vectors: Option<&'a VectorIndex>,
+    pub embedding: Option<Arc<dyn EmbeddingProvider>>,
+    pub reranker: Option<Arc<dyn RerankProvider>>,
+    pub store: &'a Store,
+    pub dek: &'a crate::crypto::Key32,
 }
 
 /// RRF 融合两组排名结果
@@ -109,6 +142,80 @@ pub fn rerank(
         result.score = RERANK_VECTOR_WEIGHT * rerank_score + RERANK_RRF_WEIGHT * rrf_score;
     }
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+/// 三阶段搜索：initial_k 粗召回 → intermediate_k RRF 融合 → Rerank → top_k 返回
+///
+/// 同时被 search 端点和 chat 引擎调用，避免重复逻辑。
+pub fn search_with_context(
+    ctx: &SearchContext<'_>,
+    query: &str,
+    params: &SearchParams,
+) -> crate::error::Result<Vec<SearchResult>> {
+    // 1. 全文搜索（initial_k）
+    let ft_results = ctx.fulltext
+        .map(|ft| ft.search(query, params.initial_k).unwrap_or_default())
+        .unwrap_or_default();
+
+    // 2. 向量搜索（initial_k）
+    let (vec_results, query_vec): (Vec<(String, f32)>, Option<Vec<f32>>) =
+        match (&ctx.embedding, &ctx.vectors) {
+            (Some(emb), Some(vecs)) => {
+                match emb.embed(&[query]) {
+                    Ok(e) if !e.is_empty() => {
+                        let qv = e[0].clone();
+                        let vr = vecs.search(&qv, params.initial_k)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|(meta, score)| (meta.item_id, score))
+                            .collect();
+                        (vr, Some(qv))
+                    }
+                    _ => (vec![], None),
+                }
+            }
+            _ => (vec![], None),
+        };
+
+    // 3. RRF 融合 → intermediate_k
+    let fused = rrf_fuse(&vec_results, &ft_results, DEFAULT_VECTOR_WEIGHT, DEFAULT_FULLTEXT_WEIGHT, params.intermediate_k);
+
+    // 4. 获取并解密 items
+    let mut results: Vec<SearchResult> = Vec::new();
+    for (item_id, score) in &fused {
+        if let Ok(Some(item)) = ctx.store.get_item(ctx.dek, item_id) {
+            results.push(SearchResult {
+                item_id: item.id,
+                score: *score,
+                title: item.title,
+                content: item.content,
+                source_type: item.source_type,
+                inject_content: None,
+            });
+        }
+    }
+
+    // 5. Rerank（有 Reranker 时用 cross-encoder；有 query 向量时用余弦；否则跳过）
+    if params.intermediate_k <= RERANK_TOP_K_THRESHOLD {
+        if let Some(reranker) = &ctx.reranker {
+            let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
+            if let Ok(scores) = reranker.score(query, &docs) {
+                for (r, s) in results.iter_mut().zip(scores.iter()) {
+                    r.score = *s;
+                }
+                results.sort_by(|a, b| b.score.partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal));
+            }
+        } else if let Some(qvec) = &query_vec {
+            if let Some(vecs) = ctx.vectors {
+                rerank(qvec, &mut results, vecs);
+            }
+        }
+    }
+
+    // 6. 截取 top_k
+    results.truncate(params.top_k);
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -221,5 +328,21 @@ mod tests {
         ];
         rerank(&[1.0, 0.0], &mut results, &idx);
         assert!(results[0].score >= results[1].score);
+    }
+
+    #[test]
+    fn search_params_defaults_clamp_correctly() {
+        let p = SearchParams::with_defaults(5);
+        assert_eq!(p.top_k, 5);
+        assert_eq!(p.initial_k, 25);   // 5*5=25, in [20,100]
+        assert_eq!(p.intermediate_k, 10); // 5*2=10, in [5,40]
+
+        let p2 = SearchParams::with_defaults(1);
+        assert_eq!(p2.initial_k, 20);  // min clamp
+        assert_eq!(p2.intermediate_k, 2); // max(1, min(2, 40))
+
+        let p3 = SearchParams::with_defaults(30);
+        assert_eq!(p3.initial_k, 100); // max clamp
+        assert_eq!(p3.intermediate_k, 40); // max clamp
     }
 }
