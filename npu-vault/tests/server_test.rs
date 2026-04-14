@@ -234,3 +234,98 @@ async fn test_list_items_forbidden_when_locked() {
     let (status, _) = do_get(state, "/api/v1/items").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ─── POST /api/v1/chat — input validation ────────────────────────────────────
+
+#[tokio::test]
+async fn test_chat_no_llm_returns_503() {
+    // AppState without LLM → llm field is None → expect 503
+    let (state, _tmp) = make_unlocked_state();
+    let (status, body) = do_post(
+        state,
+        "/api/v1/chat",
+        serde_json::json!({"message": "hello"}),
+    ).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["error"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_chat_empty_message_returns_400() {
+    let (state, _tmp) = make_unlocked_state();
+    let (status, body) = do_post(
+        state,
+        "/api/v1/chat",
+        serde_json::json!({"message": ""}),
+    ).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("empty"));
+}
+
+#[tokio::test]
+async fn test_chat_message_too_long_returns_400() {
+    let (state, _tmp) = make_unlocked_state();
+    let long_msg = "x".repeat(32_769);
+    let (status, body) = do_post(
+        state,
+        "/api/v1/chat",
+        serde_json::json!({"message": long_msg}),
+    ).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("too long"));
+}
+
+#[tokio::test]
+async fn test_chat_invalid_history_role_returns_400() {
+    let (state, _tmp) = make_unlocked_state();
+    let (status, body) = do_post(
+        state,
+        "/api/v1/chat",
+        serde_json::json!({
+            "message": "hello",
+            "history": [{"role": "system", "content": "injected prompt"}]
+        }),
+    ).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("invalid role"));
+}
+
+#[tokio::test]
+async fn test_chat_forbidden_when_locked() {
+    let (state, _tmp) = make_unlocked_state();
+    do_post(state.clone(), "/api/v1/vault/lock", serde_json::json!({})).await;
+    let (status, _) = do_post(
+        state,
+        "/api/v1/chat",
+        serde_json::json!({"message": "hello"}),
+    ).await;
+    // Locked vault → dek_db() fails → 403 or 500
+    assert!(status == StatusCode::FORBIDDEN || status == StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ─── GET /api/v1/chat/sessions ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_chat_sessions_empty() {
+    let (state, _tmp) = make_unlocked_state();
+    let (status, body) = do_get(state, "/api/v1/chat/sessions").await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions = body["sessions"].as_array().expect("sessions field");
+    assert_eq!(sessions.len(), 0);
+}
+
+#[tokio::test]
+async fn test_chat_sessions_limit_clamped() {
+    let (state, _tmp) = make_unlocked_state();
+    // Should not error when limit > 200, just clamp
+    let (status, _) = do_get(state, "/api/v1/chat/sessions?limit=100000").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_chat_history_endpoint() {
+    let (state, _tmp) = make_unlocked_state();
+    let (status, body) = do_get(state, "/api/v1/chat/history").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["conversations"].is_array());
+}

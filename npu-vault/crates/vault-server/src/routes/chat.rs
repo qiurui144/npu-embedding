@@ -32,7 +32,7 @@ pub async fn chat(
     State(state): State<SharedState>,
     Json(mut body): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // Input validation
+    // Input validation — 在所有状态检查之前优先拒绝无效输入
     if body.message.is_empty() {
         return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "message cannot be empty"}))));
     }
@@ -40,6 +40,18 @@ pub async fn chat(
         return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
             "error": format!("message too long (max {MAX_MESSAGE_LEN} bytes)")
         }))));
+    }
+    // 白名单校验 history role：防止客户端注入 system 消息绕过 RAG 指令
+    const ALLOWED_ROLES: &[&str] = &["user", "assistant"];
+    for h in &body.history {
+        if !ALLOWED_ROLES.contains(&h.role.as_str()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("invalid role '{}': must be 'user' or 'assistant'", h.role)
+                })),
+            ));
+        }
     }
     // 静默截断历史深度：保留最近 N 条
     if body.history.len() > MAX_HISTORY_DEPTH {

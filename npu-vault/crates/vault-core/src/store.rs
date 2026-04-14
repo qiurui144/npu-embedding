@@ -859,7 +859,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, role, content, citations, created_at
              FROM conversation_messages
-             WHERE conversation_id = ?1 ORDER BY created_at ASC",
+             WHERE conversation_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(params![conv_id], |row| {
             let enc_content: Vec<u8> = row.get(2)?;
