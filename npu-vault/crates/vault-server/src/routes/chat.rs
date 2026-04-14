@@ -203,14 +203,14 @@ pub async fn chat_history(
             Json(serde_json::json!({"error": "vault lock"})),
         )
     })?;
-    let _ = vault.dek_db().map_err(|e| {
+    let dek = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": e.to_string()})),
         )
     })?;
 
-    let sessions = vault.store().list_conversations(50, 0).map_err(|e| {
+    let sessions = vault.store().list_conversations(&dek, 50, 0).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),

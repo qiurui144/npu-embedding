@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
+    title       BLOB NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -821,30 +821,38 @@ impl Store {
 
     // ── Conversation Session CRUD ─────────────────────────────────────────────
 
-    pub fn create_conversation(&self, _dek: &Key32, title: &str) -> Result<String> {
+    pub fn create_conversation(&self, dek: &Key32, title: &str) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let enc_title = crypto::encrypt(dek, title.as_bytes())?;
         self.conn.execute(
             "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-            params![id, title, now],
+            params![id, enc_title, now],
         )?;
         Ok(id)
     }
 
-    pub fn list_conversations(&self, limit: usize, offset: usize) -> Result<Vec<ConversationSummary>> {
+    pub fn list_conversations(&self, dek: &Key32, limit: usize, offset: usize) -> Result<Vec<ConversationSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, created_at, updated_at FROM conversations
              ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit as i64, offset as i64], |row| {
-            Ok(ConversationSummary {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                created_at: row.get(2)?,
-                updated_at: row.get(3)?,
-            })
+            let enc_title: Vec<u8> = row.get(1)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                enc_title,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(VaultError::Database)
+        let mut results = Vec::new();
+        for row in rows {
+            let (id, enc_title, created_at, updated_at) = row.map_err(VaultError::Database)?;
+            let title = String::from_utf8(crypto::decrypt(dek, &enc_title)?).unwrap_or_default();
+            results.push(ConversationSummary { id, title, created_at, updated_at });
+        }
+        Ok(results)
     }
 
     pub fn get_conversation_messages(&self, dek: &Key32, conv_id: &str) -> Result<Vec<ConvMessage>> {
@@ -912,21 +920,28 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_conversation_by_id(&self, conv_id: &str) -> Result<Option<ConversationSummary>> {
+    pub fn get_conversation_by_id(&self, dek: &Key32, conv_id: &str) -> Result<Option<ConversationSummary>> {
         use rusqlite::OptionalExtension;
-        self.conn
+        let row = self.conn
             .query_row(
                 "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?1",
                 params![conv_id],
-                |row| Ok(ConversationSummary {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
-                }),
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                )),
             )
             .optional()
-            .map_err(VaultError::Database)
+            .map_err(VaultError::Database)?;
+        match row {
+            Some((id, enc_title, created_at, updated_at)) => {
+                let title = String::from_utf8(crypto::decrypt(dek, &enc_title)?).unwrap_or_default();
+                Ok(Some(ConversationSummary { id, title, created_at, updated_at }))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -1380,7 +1395,7 @@ mod tests {
         let dek = test_dek();
         let id1 = store.create_conversation(&dek, "第一个会话").unwrap();
         let _id2 = store.create_conversation(&dek, "第二个会话").unwrap();
-        let list = store.list_conversations(10, 0).unwrap();
+        let list = store.list_conversations(&dek, 10, 0).unwrap();
         assert_eq!(list.len(), 2);
         let ids: Vec<&str> = list.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&id1.as_str()));
@@ -1409,7 +1424,7 @@ mod tests {
         store.delete_conversation(&conv_id).unwrap();
         let msgs = store.get_conversation_messages(&dek, &conv_id).unwrap();
         assert!(msgs.is_empty());
-        let list = store.list_conversations(10, 0).unwrap();
+        let list = store.list_conversations(&dek, 10, 0).unwrap();
         assert!(list.is_empty());
     }
 

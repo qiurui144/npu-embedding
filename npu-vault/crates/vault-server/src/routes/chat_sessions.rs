@@ -31,12 +31,12 @@ pub async fn list_sessions(
     Query(params): Query<PaginationQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
-    let _ = vault.dek_db().map_err(|e| {
+    let dek = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
     let sessions = vault
         .store()
-        .list_conversations(params.limit, params.offset)
+        .list_conversations(&dek, params.limit, params.offset)
         .map_err(|e| err_500(&e.to_string()))?;
     let total = sessions.len();
     Ok(Json(serde_json::json!({
@@ -56,7 +56,7 @@ pub async fn get_session(
     })?;
     let summary = vault
         .store()
-        .get_conversation_by_id(&session_id)
+        .get_conversation_by_id(&dek, &session_id)
         .map_err(|e| err_500(&e.to_string()))?
         .ok_or_else(|| {
             (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "session not found"})))

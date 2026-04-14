@@ -29,7 +29,7 @@ mod chat_session_tests {
         assert_eq!(msgs[1].content, "权利要求书分析如下...");
 
         // 列出 sessions
-        let list = store.list_conversations(10, 0).unwrap();
+        let list = store.list_conversations(&dek, 10, 0).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, sid);
 
@@ -46,8 +46,8 @@ mod chat_session_tests {
         for i in 0..5 {
             store.create_conversation(&dek, &format!("会话{}", i)).unwrap();
         }
-        let page1 = store.list_conversations(3, 0).unwrap();
-        let page2 = store.list_conversations(3, 3).unwrap();
+        let page1 = store.list_conversations(&dek, 3, 0).unwrap();
+        let page2 = store.list_conversations(&dek, 3, 3).unwrap();
         assert_eq!(page1.len(), 3);
         assert_eq!(page2.len(), 2);
     }
@@ -57,10 +57,10 @@ mod chat_session_tests {
         let store = Store::open_memory().unwrap();
         let dek = make_dek();
         let sid = store.create_conversation(&dek, "测试").unwrap();
-        let before = store.list_conversations(1, 0).unwrap()[0].updated_at.clone();
+        let before = store.list_conversations(&dek, 1, 0).unwrap()[0].updated_at.clone();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         store.append_message(&dek, &sid, "user", "消息", &[]).unwrap();
-        let after = store.list_conversations(1, 0).unwrap()[0].updated_at.clone();
+        let after = store.list_conversations(&dek, 1, 0).unwrap()[0].updated_at.clone();
         assert_ne!(before, after, "updated_at 应在 append_message 后更新");
     }
 }
