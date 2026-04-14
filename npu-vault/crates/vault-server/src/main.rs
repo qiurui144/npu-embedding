@@ -148,6 +148,8 @@ async fn main() {
         .route("/api/v1/index/status", get(routes::index::index_status))
         // File upload
         .route("/api/v1/upload", post(routes::upload::upload_file))
+        // WebSocket endpoints (no vault_guard needed)
+        .route("/ws/scan-progress", get(routes::ws::scan_progress))
         // Web UI (embedded single-page HTML)
         .route("/", get(routes::ui::index))
         .route("/ui", get(routes::ui::index))

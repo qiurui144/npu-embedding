@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>npu-vault</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0f172a; color: #e2e8f0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; padding: 16px;
+  }
+  .container { width: 100%; max-width: 720px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: #64748b; margin-bottom: 24px; }
+  .card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+    padding: 16px; margin-bottom: 12px;
+  }
+  .status-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 12px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+  }
+  .badge-sealed { background: #7f1d1d; color: #fecaca; }
+  .badge-locked { background: #78350f; color: #fde68a; }
+  .badge-unlocked { background: #064e3b; color: #a7f3d0; }
+  .field { margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+  input, textarea, select, button {
+    width: 100%; padding: 8px 12px; border: 1px solid #334155;
+    background: #0f172a; color: #e2e8f0; border-radius: 6px;
+    font-family: inherit; font-size: 14px;
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  button {
+    background: #2563eb; border: none; cursor: pointer; font-weight: 500;
+    transition: background 0.15s;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #475569; cursor: not-allowed; }
+  button.secondary { background: #475569; }
+  button.secondary:hover { background: #334155; }
+  button.danger { background: #991b1b; }
+  button.danger:hover { background: #7f1d1d; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .tabs {
+    display: flex; gap: 4px; border-bottom: 1px solid #334155; margin-bottom: 16px;
+  }
+  .tab {
+    padding: 8px 16px; cursor: pointer; border: none; background: transparent;
+    color: #94a3b8; width: auto;
+  }
+  .tab.active { color: #e2e8f0; border-bottom: 2px solid #2563eb; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .item {
+    padding: 12px; margin-bottom: 8px; background: #0f172a;
+    border: 1px solid #334155; border-radius: 6px; cursor: pointer;
+  }
+  .item:hover { border-color: #2563eb; }
+  .item-title { font-weight: 500; margin-bottom: 4px; }
+  .item-meta { font-size: 11px; color: #64748b; }
+  .item-content { font-size: 13px; color: #94a3b8; margin-top: 8px; }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #1e293b; border: 1px solid #334155; padding: 12px 16px;
+    border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    opacity: 0; transition: opacity 0.2s; z-index: 1000;
+  }
+  .toast.show { opacity: 1; }
+  .toast.error { border-color: #991b1b; color: #fecaca; }
+  .toast.success { border-color: #064e3b; color: #a7f3d0; }
+  .empty { text-align: center; color: #64748b; padding: 24px; font-size: 13px; }
+  /* Mobile responsive */
+  @media (max-width: 640px) {
+    .tabs {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #1e293b;
+      border-top: 1px solid #334155;
+      border-bottom: none;
+      z-index: 100;
+      justify-content: space-around;
+      padding: 4px 0;
+      margin-bottom: 0;
+    }
+    .tab {
+      font-size: 11px;
+      padding: 6px 8px;
+    }
+    /* Hide advanced tabs on mobile */
+    .tab[data-tab="classify"],
+    .tab[data-tab="clusters"],
+    .tab[data-tab="remote"],
+    .tab[data-tab="history"] {
+      display: none;
+    }
+    .container {
+      padding-bottom: 60px; /* Space for fixed bottom nav */
+    }
+    body { padding: 8px; }
+    .card { padding: 12px; }
+    h1 { font-size: 16px; }
+    textarea { min-height: 60px; }
+    #chat-messages { max-height: 50vh; }
+    button { padding: 10px 12px; min-height: 44px; } /* Touch-friendly */
+    input, select { min-height: 44px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🔐 npu-vault</h1>
+  <p class="subtitle">本地优先、端到端加密的个人知识库</p>
+
+  <div class="card">
+    <div class="row">
+      <span>状态: <span id="state-badge" class="status-badge badge-sealed">loading</span></span>
+      <span style="text-align: right; font-size: 12px; color: #64748b;">
+        <span id="item-count">0</span> 条目
+      </span>
+    </div>
+  </div>
+
+  <div id="diagnostics-banner" class="card" style="display: none; padding: 8px 16px; font-size: 12px;">
+  </div>
+
+  <div id="scan-progress-card" style="border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:16px;">
+    <h3 style="margin:0 0 12px;font-size:14px;font-weight:600;color:#374151;">后台处理进度</h3>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+      <div style="text-align:center;">
+        <div id="prog-embed" style="font-size:24px;font-weight:700;color:#3b82f6;">—</div>
+        <div style="font-size:12px;color:#6b7280;margin-top:4px;">待 Embedding</div>
+      </div>
+      <div style="text-align:center;">
+        <div id="prog-classify" style="font-size:24px;font-weight:700;color:#8b5cf6;">—</div>
+        <div style="font-size:12px;color:#6b7280;margin-top:4px;">待分类</div>
+      </div>
+      <div style="text-align:center;">
+        <div id="prog-dirs" style="font-size:24px;font-weight:700;color:#10b981;">—</div>
+        <div style="font-size:12px;color:#6b7280;margin-top:4px;">绑定目录</div>
+      </div>
+    </div>
+    <div id="prog-status" style="margin-top:8px;font-size:12px;color:#9ca3af;text-align:center;">连接中...</div>
+  </div>
+
+  <div id="view-sealed" class="card" style="display: none;">
+    <div id="wizard-step-1">
+      <h2 style="font-size: 16px; margin-bottom: 16px;">欢迎使用 npu-vault</h2>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+        本地加密的 AI 知识助手。您的文档在设备上加密存储，通过 AI 自动分类和检索。
+      </p>
+      <div class="field">
+        <label>选择语言 / Language</label>
+        <select id="wizard-lang">
+          <option value="zh" selected>中文</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>您的角色</label>
+        <select id="wizard-role">
+          <option value="general">通用知识工作者</option>
+          <option value="lawyer">律师 / 法务</option>
+          <option value="presales">售前 / 标书撰写</option>
+          <option value="developer">开发者 / 技术人员</option>
+        </select>
+      </div>
+      <button id="btn-wizard-next-1">下一步</button>
+    </div>
+
+    <div id="wizard-step-2" style="display: none;">
+      <h2 style="font-size: 16px; margin-bottom: 16px;">设置主密码</h2>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+        主密码用于加密您的知识库。请牢记——忘记密码将无法恢复数据。
+      </p>
+      <div class="field">
+        <label>主密码（至少 6 位）</label>
+        <input type="password" id="setup-password" placeholder="请输入主密码">
+      </div>
+      <div class="field">
+        <label>确认主密码</label>
+        <input type="password" id="setup-confirm" placeholder="再次输入">
+      </div>
+      <button id="btn-wizard-next-2">下一步</button>
+    </div>
+
+    <div id="wizard-step-3" style="display: none;">
+      <h2 style="font-size: 16px; margin-bottom: 16px;">AI 后端</h2>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+        npu-vault 使用 AI 自动分类和语义搜索。您可以选择：
+      </p>
+      <div class="field">
+        <label>
+          <input type="radio" name="ai-backend" value="skip" checked>
+          跳过（稍后配置）— 仅全文搜索，无需安装任何软件
+        </label>
+      </div>
+      <div class="field">
+        <label>
+          <input type="radio" name="ai-backend" value="ollama">
+          本地 Ollama — 免费、隐私最优
+        </label>
+        <p style="font-size: 11px; color: #64748b; margin-left: 20px;">
+          安装: curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5:3b && ollama pull bge-m3
+        </p>
+      </div>
+      <button id="btn-wizard-finish">完成设置</button>
+    </div>
+
+    <div id="wizard-step-done" style="display: none;">
+      <h2 style="font-size: 16px; margin-bottom: 16px; color: #a7f3d0;">设置完成</h2>
+      <div id="wizard-summary" style="font-size: 13px; color: #94a3b8;"></div>
+      <div id="wizard-suggestions" style="margin-top: 12px;"></div>
+    </div>
+  </div>
+
+  <div id="view-locked" class="card" style="display: none;">
+    <h2 style="font-size: 14px; margin-bottom: 12px;">解锁</h2>
+    <div class="field">
+      <label>主密码</label>
+      <input type="password" id="unlock-password" placeholder="请输入主密码">
+    </div>
+    <button id="btn-unlock">解锁</button>
+  </div>
+
+  <div id="view-unlocked" style="display: none;">
+    <div class="tabs">
+      <button class="tab active" data-tab="chat">对话</button>
+      <button class="tab" data-tab="search">搜索</button>
+      <button class="tab" data-tab="ingest">录入</button>
+      <button class="tab" data-tab="items">条目</button>
+      <button class="tab" data-tab="classify">分类</button>
+      <button class="tab" data-tab="clusters">聚类</button>
+      <button class="tab" data-tab="remote">远程</button>
+      <button class="tab" data-tab="history">历史</button>
+      <button class="tab" data-tab="settings">设置</button>
+    </div>
+
+    <div id="tab-chat" class="tab-content active">
+      <div id="chat-messages" style="max-height: 60vh; overflow-y: auto; margin-bottom: 12px;"></div>
+      <div class="card">
+        <div class="field">
+          <textarea id="chat-input" placeholder="输入消息... (Enter 发送)" rows="3" style="min-height: 60px;"></textarea>
+        </div>
+        <div class="row">
+          <button id="btn-chat-send">发送</button>
+          <button id="btn-chat-clear" class="secondary">清空对话</button>
+        </div>
+        <div id="chat-status" style="margin-top: 8px; font-size: 11px; color: #64748b;"></div>
+      </div>
+    </div>
+
+    <div id="tab-search" class="tab-content">
+      <div class="card">
+        <div class="field">
+          <input type="search" id="search-input" placeholder="输入关键词...">
+        </div>
+        <button id="btn-search">搜索</button>
+      </div>
+      <div id="search-results"></div>
+    </div>
+
+    <div id="tab-ingest" class="tab-content">
+      <div class="card">
+        <div class="field">
+          <label>标题</label>
+          <input type="text" id="ingest-title" placeholder="标题">
+        </div>
+        <div class="field">
+          <label>内容</label>
+          <textarea id="ingest-content" placeholder="内容..."></textarea>
+        </div>
+        <div class="field">
+          <label>来源类型</label>
+          <select id="ingest-source">
+            <option value="note">笔记</option>
+            <option value="webpage">网页</option>
+            <option value="ai_chat">AI 对话</option>
+            <option value="file">文件</option>
+          </select>
+        </div>
+        <button id="btn-ingest">保存</button>
+      </div>
+    </div>
+
+    <div id="tab-items" class="tab-content">
+      <button id="btn-refresh" class="secondary" style="margin-bottom: 12px;">刷新列表</button>
+      <div id="items-list"></div>
+    </div>
+
+    <div id="tab-classify" class="tab-content">
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">维度浏览</h2>
+        <div class="field">
+          <label>选择维度</label>
+          <select id="classify-dim-select">
+            <option value="domain">领域 (domain)</option>
+            <option value="topic">主题 (topic)</option>
+            <option value="purpose">用途 (purpose)</option>
+            <option value="project">项目 (project)</option>
+            <option value="difficulty">深度 (difficulty)</option>
+            <option value="freshness">时效 (freshness)</option>
+            <option value="action_type">行动 (action_type)</option>
+          </select>
+        </div>
+        <button id="btn-classify-load">加载直方图</button>
+      </div>
+      <div id="classify-histogram"></div>
+      <div class="card">
+        <button id="btn-classify-rebuild" class="secondary">重新分类全部条目</button>
+        <div id="classify-status" style="margin-top: 8px; font-size: 12px; color: #94a3b8;"></div>
+      </div>
+    </div>
+
+    <div id="tab-clusters" class="tab-content">
+      <div class="card">
+        <button id="btn-clusters-reload">刷新聚类</button>
+        <button id="btn-clusters-rebuild" class="secondary" style="margin-left: 8px;">重新聚类</button>
+        <div id="clusters-meta" style="margin-top: 8px; font-size: 12px; color: #94a3b8;"></div>
+      </div>
+      <div id="clusters-list"></div>
+    </div>
+
+    <div id="tab-remote" class="tab-content">
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">绑定 WebDAV 远程目录</h2>
+        <div class="field">
+          <label>WebDAV URL</label>
+          <input type="url" id="remote-url" placeholder="https://nas.example.com/webdav">
+        </div>
+        <div class="field">
+          <label>用户名（可选）</label>
+          <input type="text" id="remote-user" placeholder="username">
+        </div>
+        <div class="field">
+          <label>密码（可选）</label>
+          <input type="password" id="remote-pass" placeholder="password">
+        </div>
+        <button id="btn-remote-bind">绑定并扫描</button>
+        <div id="remote-status" style="margin-top: 8px; font-size: 12px; color: #94a3b8;"></div>
+      </div>
+    </div>
+
+    <div id="tab-history" class="tab-content">
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">最近搜索</h2>
+        <div id="history-list"></div>
+      </div>
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">热门条目</h2>
+        <div id="popular-list"></div>
+      </div>
+      <div class="card">
+        <button id="btn-refresh-behavior" class="secondary">刷新</button>
+      </div>
+    </div>
+
+    <div id="tab-settings" class="tab-content">
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">分类队列</h2>
+        <button id="btn-classify-drain" class="secondary">处理一批分类任务</button>
+        <div id="classify-drain-status" style="margin-top: 8px; font-size: 12px; color: #94a3b8;"></div>
+      </div>
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">画像导出 / 导入</h2>
+        <button id="btn-profile-export" class="secondary">导出 Profile JSON</button>
+        <button id="btn-profile-import" class="secondary" style="margin-top: 8px;">从剪贴板导入</button>
+      </div>
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">设备密钥</h2>
+        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px;">迁移到新设备时需要导出此密钥</p>
+        <button id="btn-export" class="secondary">导出 Device Secret</button>
+      </div>
+      <div class="card">
+        <button id="btn-lock" class="danger">锁定 Vault</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+  let currentToken = sessionStorage.getItem('vault_token') || '';
+
+  function $(id) { return document.getElementById(id); }
+  function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+  function makeEl(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function toast(msg, type) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (type || '');
+    setTimeout(function() { t.className = 'toast ' + (type || ''); }, 2500);
+  }
+
+  async function api(path, options) {
+    options = options || {};
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+    if (currentToken) headers['Authorization'] = 'Bearer ' + currentToken;
+    const resp = await fetch('/api/v1' + path, Object.assign({}, options, { headers: headers }));
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+    return data;
+  }
+
+  async function refreshStatus() {
+    try {
+      const s = await api('/vault/status');
+      const badge = $('state-badge');
+      badge.textContent = s.state;
+      badge.className = 'status-badge badge-' + s.state;
+      $('item-count').textContent = s.items;
+      $('view-sealed').style.display = s.state === 'sealed' ? 'block' : 'none';
+      $('view-locked').style.display = s.state === 'locked' ? 'block' : 'none';
+      $('view-unlocked').style.display = s.state === 'unlocked' ? 'block' : 'none';
+      if (s.state === 'unlocked') loadItems();
+      if (s.state === 'unlocked') refreshDiagnostics();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function refreshDiagnostics() {
+    try {
+      const d = await api('/status/diagnostics');
+      const banner = $('diagnostics-banner');
+      if (d.vault_state !== 'unlocked') {
+        banner.style.display = 'none';
+        return;
+      }
+      banner.style.display = 'block';
+      if (d.ai_status === 'ready') {
+        banner.style.borderColor = '#064e3b';
+        banner.style.color = '#a7f3d0';
+        banner.textContent = 'AI 就绪 (' + d.chat_model + ') · 全文搜索 ✓ · 向量搜索 ✓ · 已分类 ' + d.tag_index_items + ' 条';
+      } else if (d.ai_status === 'partial') {
+        banner.style.borderColor = '#78350f';
+        banner.style.color = '#fde68a';
+        banner.textContent = 'AI 部分就绪 · 全文搜索 ✓ · 向量搜索 ✓ · 分类不可用（需安装 chat 模型）';
+      } else {
+        banner.style.borderColor = '#78350f';
+        banner.style.color = '#fde68a';
+        banner.textContent = 'AI 未连接 · 仅全文搜索可用 · 安装 Ollama 获取 AI 分类: ollama pull qwen2.5:3b';
+      }
+      if (d.pending_tasks > 0) {
+        banner.textContent += ' · 待处理: ' + d.pending_tasks;
+      }
+    } catch (e) { /* ignore on error */ }
+  }
+
+  async function doSetup() {
+    const pw = $('setup-password').value;
+    const confirm = $('setup-confirm').value;
+    if (pw !== confirm) return toast('密码不一致', 'error');
+    if (pw.length < 6) return toast('密码至少 6 位', 'error');
+    try {
+      await api('/vault/setup', { method: 'POST', body: JSON.stringify({ password: pw }) });
+      toast('Vault 已初始化', 'success');
+      refreshStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function doUnlock() {
+    const pw = $('unlock-password').value;
+    try {
+      const r = await api('/vault/unlock', { method: 'POST', body: JSON.stringify({ password: pw }) });
+      currentToken = r.token;
+      sessionStorage.setItem('vault_token', currentToken);
+      toast('解锁成功', 'success');
+      refreshStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function doLock() {
+    try {
+      await api('/vault/lock', { method: 'POST' });
+      currentToken = '';
+      sessionStorage.removeItem('vault_token');
+      toast('已锁定', 'success');
+      refreshStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function doIngest() {
+    const title = $('ingest-title').value.trim();
+    const content = $('ingest-content').value.trim();
+    const source = $('ingest-source').value;
+    if (!title || !content) return toast('标题和内容必填', 'error');
+    try {
+      await api('/ingest', { method: 'POST', body: JSON.stringify({ title: title, content: content, source_type: source }) });
+      toast('保存成功', 'success');
+      $('ingest-title').value = '';
+      $('ingest-content').value = '';
+      refreshStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function renderItemList(container, items, withSnippet) {
+    clearChildren(container);
+    if (!items || items.length === 0) {
+      container.appendChild(makeEl('div', 'empty', '无结果'));
+      return;
+    }
+    for (const it of items) {
+      const card = makeEl('div', 'item');
+      card.appendChild(makeEl('div', 'item-title', it.title));
+      const metaText = withSnippet && it.score !== undefined
+        ? it.source_type + ' · score ' + it.score.toFixed(3)
+        : it.source_type + (it.created_at ? ' · ' + new Date(it.created_at).toLocaleString() : '');
+      card.appendChild(makeEl('div', 'item-meta', metaText));
+      if (withSnippet && it.content) {
+        card.appendChild(makeEl('div', 'item-content', it.content.substring(0, 200)));
+      }
+      container.appendChild(card);
+    }
+  }
+
+  async function doSearch() {
+    const q = $('search-input').value.trim();
+    if (!q) return;
+    try {
+      const r = await api('/search?q=' + encodeURIComponent(q) + '&top_k=10');
+      renderItemList($('search-results'), r.results || [], true);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function loadItems() {
+    try {
+      const r = await api('/items?limit=50');
+      renderItemList($('items-list'), r.items || [], false);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function exportDeviceSecret() {
+    try {
+      const r = await api('/vault/device-secret/export');
+      prompt('Device Secret（请妥善保管）:', r.device_secret);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function switchTab(tabBtn) {
+    const name = tabBtn.dataset.tab;
+    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.tab-content').forEach(function(t) { t.classList.remove('active'); });
+    tabBtn.classList.add('active');
+    $('tab-' + name).classList.add('active');
+  }
+
+  async function loadClassifyHistogram() {
+    const dim = $('classify-dim-select').value;
+    try {
+      const r = await api('/tags/' + dim);
+      const container = $('classify-histogram');
+      clearChildren(container);
+      if (!r.values || r.values.length === 0) {
+        container.appendChild(makeEl('div', 'empty', '该维度暂无数据'));
+        return;
+      }
+      const card = makeEl('div', 'card');
+      const title = makeEl('h3', null, dim);
+      title.style.fontSize = '13px';
+      title.style.marginBottom = '8px';
+      card.appendChild(title);
+      for (const v of r.values) {
+        const row = makeEl('div', 'item');
+        row.appendChild(makeEl('div', 'item-title', v.value));
+        row.appendChild(makeEl('div', 'item-meta', v.count + ' 条'));
+        card.appendChild(row);
+      }
+      container.appendChild(card);
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function rebuildClassify() {
+    try {
+      const r = await api('/classify/rebuild', { method: 'POST' });
+      toast('已入队 ' + (r.enqueued || 0) + ' 条', 'success');
+      refreshClassifyStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function refreshClassifyStatus() {
+    try {
+      const r = await api('/classify/status');
+      const statusEl = $('classify-status');
+      statusEl.textContent = '模型: ' + (r.model || '未配置') +
+        ' · 已分类: ' + r.classified_items +
+        ' · 待处理: ' + r.pending_tasks;
+    } catch (e) { /* ignore */ }
+  }
+
+  async function loadClusters() {
+    try {
+      const r = await api('/clusters');
+      const container = $('clusters-list');
+      clearChildren(container);
+      const meta = $('clusters-meta');
+      if (r.clusters && r.clusters.length > 0) {
+        meta.textContent = '生成时间: ' + r.generated_at;
+        for (const c of r.clusters) {
+          const card = makeEl('div', 'card');
+          const title = makeEl('h3', null, '🔬 ' + c.name);
+          title.style.fontSize = '14px';
+          title.style.marginBottom = '4px';
+          card.appendChild(title);
+          card.appendChild(makeEl('div', 'item-meta', c.item_count + ' 条'));
+          if (c.summary) {
+            card.appendChild(makeEl('div', 'item-content', c.summary));
+          }
+          container.appendChild(card);
+        }
+      } else {
+        meta.textContent = '';
+        container.appendChild(makeEl('div', 'empty', r.note || '暂无聚类数据'));
+      }
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function rebuildClusters() {
+    try {
+      const r = await api('/clusters/rebuild', { method: 'POST' });
+      toast(r.note || '已触发', 'success');
+      loadClusters();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function bindRemote() {
+    const url = $('remote-url').value.trim();
+    if (!url) return toast('请输入 WebDAV URL', 'error');
+    const body = {
+      url: url,
+      username: $('remote-user').value.trim() || null,
+      password: $('remote-pass').value || null,
+      depth: 1,
+    };
+    $('remote-status').textContent = '扫描中...';
+    try {
+      const r = await api('/index/bind-remote', { method: 'POST', body: JSON.stringify(body) });
+      const scan = r.scan || {};
+      $('remote-status').textContent = '完成: total=' + scan.total_files + ' new=' + scan.new_files + ' skipped=' + scan.skipped_files;
+      toast('扫描完成', 'success');
+    } catch (e) {
+      $('remote-status').textContent = '错误: ' + e.message;
+      toast(e.message, 'error');
+    }
+  }
+
+  async function loadBehavior() {
+    try {
+      const hist = await api('/behavior/history?limit=10');
+      const histContainer = $('history-list');
+      clearChildren(histContainer);
+      if (hist.history && hist.history.length > 0) {
+        for (const h of hist.history) {
+          const row = makeEl('div', 'item');
+          row.appendChild(makeEl('div', 'item-title', h.query));
+          row.appendChild(makeEl('div', 'item-meta', h.result_count + ' 条结果 · ' + h.created_at));
+          histContainer.appendChild(row);
+        }
+      } else {
+        histContainer.appendChild(makeEl('div', 'empty', '暂无搜索历史'));
+      }
+
+      const pop = await api('/behavior/popular');
+      const popContainer = $('popular-list');
+      clearChildren(popContainer);
+      if (pop.popular && pop.popular.length > 0) {
+        for (const p of pop.popular) {
+          const row = makeEl('div', 'item');
+          row.appendChild(makeEl('div', 'item-title', p.item_id));
+          row.appendChild(makeEl('div', 'item-meta', p.click_count + ' 次点击'));
+          popContainer.appendChild(row);
+        }
+      } else {
+        popContainer.appendChild(makeEl('div', 'empty', '暂无热门条目'));
+      }
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function drainClassify() {
+    try {
+      const r = await api('/classify/drain', { method: 'POST' });
+      $('classify-drain-status').textContent = '本批处理: ' + (r.processed || 0) + ' 条';
+      toast('已处理 ' + (r.processed || 0), 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function exportProfile() {
+    try {
+      const r = await api('/profile/export');
+      const json = JSON.stringify(r, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'vault-profile-' + Date.now() + '.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      toast('已导出 ' + (r.item_count || 0) + ' 条', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function importProfile() {
+    try {
+      const text = await navigator.clipboard.readText();
+      const profile = JSON.parse(text);
+      const r = await api('/profile/import', { method: 'POST', body: JSON.stringify(profile) });
+      toast('已合并 ' + r.merged + ' 条，跳过 ' + r.skipped, 'success');
+    } catch (e) { toast('导入失败: ' + e.message, 'error'); }
+  }
+
+  function wizardNext1() {
+    $('wizard-step-1').style.display = 'none';
+    $('wizard-step-2').style.display = 'block';
+  }
+
+  async function wizardNext2() {
+    const pw = $('setup-password').value;
+    const confirm = $('setup-confirm').value;
+    if (pw !== confirm) return toast('密码不一致', 'error');
+    if (pw.length < 6) return toast('密码至少 6 位', 'error');
+
+    try {
+      await api('/vault/setup', { method: 'POST', body: JSON.stringify({ password: pw }) });
+      $('wizard-step-2').style.display = 'none';
+      $('wizard-step-3').style.display = 'block';
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  async function wizardFinish() {
+    const role = $('wizard-role').value;
+    $('wizard-step-3').style.display = 'none';
+    $('wizard-step-done').style.display = 'block';
+
+    // Role-specific suggestions
+    const suggestions = {
+      lawyer: {
+        title: '律师 / 法务',
+        dirs: ['~/Documents/Contracts', '~/Documents/Cases', '~/Documents/Legal-Research'],
+        searches: ['不可抗力条款', '竞业禁止期限', '赔偿责任上限', '合同终止条件'],
+      },
+      presales: {
+        title: '售前 / 标书撰写',
+        dirs: ['~/Documents/Proposals', '~/Documents/RFPs', '~/Documents/Case-Studies'],
+        searches: ['类似项目经验', '技术方案架构', '报价策略', '中标方案'],
+      },
+      developer: {
+        title: '开发者 / 技术人员',
+        dirs: ['~/Documents/Notes', '~/Projects'],
+        searches: ['API 设计模式', '性能优化', '架构决策'],
+      },
+      general: {
+        title: '通用知识工作者',
+        dirs: ['~/Documents'],
+        searches: ['最近的笔记', '重要参考资料'],
+      },
+    };
+
+    const s = suggestions[role] || suggestions.general;
+    const summary = $('wizard-summary');
+    summary.textContent = '角色: ' + s.title + ' · 已启用对应行业插件';
+
+    const sugBox = $('wizard-suggestions');
+    clearChildren(sugBox);
+
+    const dirCard = makeEl('div', 'card');
+    const dirTitle = makeEl('h3', null, '推荐扫描目录');
+    dirTitle.style.fontSize = '13px';
+    dirTitle.style.marginBottom = '8px';
+    dirCard.appendChild(dirTitle);
+    for (const d of s.dirs) {
+      dirCard.appendChild(makeEl('div', 'item-meta', d));
+    }
+    sugBox.appendChild(dirCard);
+
+    const searchCard = makeEl('div', 'card');
+    const searchTitle = makeEl('h3', null, '试试搜索');
+    searchTitle.style.fontSize = '13px';
+    searchTitle.style.marginBottom = '8px';
+    searchCard.appendChild(searchTitle);
+    for (const q of s.searches) {
+      const chip = makeEl('span', null, q);
+      chip.style.cssText = 'display:inline-block;padding:4px 8px;margin:2px;background:#334155;border-radius:12px;font-size:12px;cursor:pointer;';
+      chip.addEventListener('click', function() {
+        $('search-input').value = q;
+        switchTab(document.querySelector('[data-tab="search"]'));
+        doSearch();
+      });
+      searchCard.appendChild(chip);
+    }
+    sugBox.appendChild(searchCard);
+
+    refreshStatus();
+  }
+
+  // --- Chat ---
+  let chatHistory = [];
+
+  async function sendChat() {
+    const input = $('chat-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+
+    appendChatMessage('user', msg);
+    chatHistory.push({ role: 'user', content: msg });
+
+    $('chat-status').textContent = '正在检索知识库并生成回答...';
+    $('btn-chat-send').disabled = true;
+
+    try {
+      const r = await api('/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          message: msg,
+          history: chatHistory.slice(-14),
+        }),
+      });
+
+      appendChatMessage('assistant', r.content, r.citations, r.knowledge_count);
+      chatHistory.push({ role: 'assistant', content: r.content });
+
+      $('chat-status').textContent = '知识库检索 ' + r.knowledge_count + ' 条相关文档';
+    } catch (e) {
+      appendChatMessage('assistant', '错误: ' + e.message);
+      $('chat-status').textContent = '发送失败: ' + e.message;
+    } finally {
+      $('btn-chat-send').disabled = false;
+    }
+  }
+
+  function appendChatMessage(role, content, citations, knowledgeCount) {
+    const container = $('chat-messages');
+    const bubble = makeEl('div', 'card');
+    bubble.style.marginBottom = '8px';
+
+    var roleLabel = makeEl('div', 'item-meta', role === 'user' ? '你' : 'AI');
+    bubble.appendChild(roleLabel);
+
+    var text = makeEl('div', null, content);
+    text.style.fontSize = '14px';
+    text.style.marginTop = '4px';
+    text.style.whiteSpace = 'pre-wrap';
+    bubble.appendChild(text);
+
+    if (citations && citations.length > 0) {
+      var citDiv = makeEl('div', 'item-meta');
+      citDiv.style.marginTop = '8px';
+      citDiv.textContent = '引用: ' + citations.map(function(c) {
+        return c.title || c.item_id;
+      }).join(', ');
+      bubble.appendChild(citDiv);
+    }
+
+    container.appendChild(bubble);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function clearChat() {
+    chatHistory = [];
+    clearChildren($('chat-messages'));
+    $('chat-status').textContent = '';
+  }
+
+  // Event bindings
+  $('btn-chat-send').addEventListener('click', sendChat);
+  $('btn-chat-clear').addEventListener('click', clearChat);
+  $('chat-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+  $('btn-wizard-next-1').addEventListener('click', wizardNext1);
+  $('btn-wizard-next-2').addEventListener('click', wizardNext2);
+  $('btn-wizard-finish').addEventListener('click', wizardFinish);
+  // doSetup is no longer needed; wizard handles setup via wizardNext2
+  $('btn-unlock').addEventListener('click', doUnlock);
+  $('btn-lock').addEventListener('click', doLock);
+  $('btn-ingest').addEventListener('click', doIngest);
+  $('btn-search').addEventListener('click', doSearch);
+  $('btn-refresh').addEventListener('click', loadItems);
+  $('btn-export').addEventListener('click', exportDeviceSecret);
+  $('btn-classify-load').addEventListener('click', loadClassifyHistogram);
+  $('btn-classify-rebuild').addEventListener('click', rebuildClassify);
+  $('btn-clusters-reload').addEventListener('click', loadClusters);
+  $('btn-clusters-rebuild').addEventListener('click', rebuildClusters);
+  $('unlock-password').addEventListener('keydown', function(e) { if (e.key === 'Enter') doUnlock(); });
+  $('search-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
+  $('btn-remote-bind').addEventListener('click', bindRemote);
+  $('btn-refresh-behavior').addEventListener('click', loadBehavior);
+  $('btn-classify-drain').addEventListener('click', drainClassify);
+  $('btn-profile-export').addEventListener('click', exportProfile);
+  $('btn-profile-import').addEventListener('click', importProfile);
+  document.querySelectorAll('.tab').forEach(function(t) { t.addEventListener('click', function() { switchTab(t); }); });
+
+  refreshStatus();
+  setInterval(refreshStatus, 30000);
+  setInterval(refreshDiagnostics, 30000);
+})();
+
+(function initScanProgressWs() {
+  var ws = null;
+  var retryTimer = null;
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws/scan-progress');
+    ws.onmessage = function(evt) {
+      try {
+        var d = JSON.parse(evt.data);
+        var locked = d.vault_state === 'locked';
+        document.getElementById('prog-embed').textContent = locked ? '—' : d.pending_embeddings;
+        document.getElementById('prog-classify').textContent = locked ? '—' : d.pending_classify;
+        document.getElementById('prog-dirs').textContent = locked ? '—' : d.bound_dirs;
+        document.getElementById('prog-status').textContent = locked ? 'Vault 已锁定'
+          : (d.pending_embeddings + d.pending_classify === 0 ? '空闲' : '处理中...');
+      } catch(e) {}
+    };
+    ws.onclose = function() {
+      document.getElementById('prog-status').textContent = '已断开，3 秒后重连…';
+      retryTimer = setTimeout(connect, 3000);
+    };
+    ws.onerror = function() { ws.close(); };
+  }
+  connect();
+  window.addEventListener('beforeunload', function() {
+    clearTimeout(retryTimer);
+    if (ws) ws.close();
+  });
+})();
+</script>
+</body>
+</html>
