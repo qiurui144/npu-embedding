@@ -389,7 +389,8 @@ impl AppState {
                     }
                 };
 
-                // 写入向量索引 + 全文索引 + 标记完成
+                // 写入向量索引 + 全文索引，收集成功处理的 task id
+                let mut done_ids: Vec<i64> = Vec::new();
                 for (i, task) in embed_tasks.iter().enumerate() {
                     if i >= embeddings.len() {
                         break;
@@ -418,9 +419,14 @@ impl AppState {
                             }
                         }
                     }
-                    {
-                        let vault = state.vault.lock().unwrap();
-                        let _ = vault.store().mark_embedding_done(task.id);
+                    done_ids.push(task.id);
+                }
+
+                // 循环外：一次性标记完成（单次加锁，避免批量锁竞争）
+                if !done_ids.is_empty() {
+                    let vault = state.vault.lock().unwrap();
+                    for id in &done_ids {
+                        let _ = vault.store().mark_embedding_done(*id);
                     }
                 }
 
