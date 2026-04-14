@@ -282,6 +282,47 @@ impl Store {
         Ok(items)
     }
 
+    /// 列出长时间未更新的条目（stale items）
+    pub fn list_stale_items(&self, days: i64, limit: i64) -> Result<Vec<StaleItemSummary>> {
+        let cutoff = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(days))
+            .unwrap_or_else(chrono::Utc::now)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, source_type, updated_at, created_at
+             FROM items
+             WHERE is_deleted = 0 AND updated_at < ?1
+             ORDER BY updated_at ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![cutoff, limit], |row| {
+            Ok(StaleItemSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                source_type: row.get(2)?,
+                updated_at: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?);
+        }
+        Ok(items)
+    }
+
+    /// 测试辅助：直接设置 updated_at 时间戳
+    #[cfg(test)]
+    pub fn set_updated_at(&self, id: &str, ts: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE items SET updated_at = ?1 WHERE id = ?2",
+            params![ts, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_item(&self, dek: &Key32, id: &str, title: Option<&str>, content: Option<&str>) -> Result<bool> {
         let exists: bool = self.conn.query_row(
             "SELECT COUNT(*) FROM items WHERE id = ?1 AND is_deleted = 0",
@@ -743,6 +784,15 @@ pub struct ItemSummary {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StaleItemSummary {
+    pub id: String,
+    pub title: String,
+    pub source_type: String,
+    pub updated_at: String,
+    pub created_at: String,
+}
+
 /// Embedding 队列任务
 #[derive(Debug)]
 pub struct QueueTask {
@@ -1016,5 +1066,25 @@ mod tests {
         let ids = store.list_all_item_ids().unwrap();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&a));
+    }
+
+    #[test]
+    fn list_stale_items_basic() {
+        use chrono::{Duration, Utc};
+        let store = Store::open_memory().unwrap();
+        let dek = crate::crypto::Key32::generate();
+        let id = store.insert_item(&dek, "New", "content", None, "note", None, None).unwrap();
+        let old_ts = (Utc::now() - Duration::days(40)).format("%Y-%m-%dT%H:%M:%S").to_string();
+        store.set_updated_at(&id, &old_ts).unwrap();
+        let stale = store.list_stale_items(30, 50).unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].id, id);
+    }
+
+    #[test]
+    fn list_stale_items_empty() {
+        let store = Store::open_memory().unwrap();
+        let stale = store.list_stale_items(30, 50).unwrap();
+        assert!(stale.is_empty());
     }
 }

@@ -120,6 +120,7 @@ async fn main() {
         // Ingest + Items + Search
         .route("/api/v1/ingest", post(routes::ingest::ingest))
         .route("/api/v1/items", get(routes::items::list_items))
+        .route("/api/v1/items/stale", get(routes::items::list_stale_items))
         .route("/api/v1/items/{id}", get(routes::items::get_item).delete(routes::items::delete_item).patch(routes::items::update_item))
         .route("/api/v1/settings", get(routes::settings::get_settings).patch(routes::settings::update_settings))
         .route("/api/v1/search", get(routes::search::search))
