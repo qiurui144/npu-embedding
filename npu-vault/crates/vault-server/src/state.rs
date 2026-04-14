@@ -43,6 +43,10 @@ pub struct AppState {
     pub require_auth: bool,
     /// 防止重复启动 QueueWorker 后台线程
     pub queue_worker_running: AtomicBool,
+    /// 防止重复启动 ClassifyWorker 后台线程
+    pub classify_worker_running: AtomicBool,
+    /// 防止重复启动 RescanWorker 后台线程
+    pub rescan_worker_running: AtomicBool,
     /// 防止并发 unlock 重复初始化搜索引擎（重建索引会清空内存向量）
     pub engines_initialized: AtomicBool,
     pub search_cache: Mutex<LruCache<u64, CachedSearch>>,
@@ -63,6 +67,8 @@ impl AppState {
             classifier: Mutex::new(None),
             require_auth,
             queue_worker_running: AtomicBool::new(false),
+            classify_worker_running: AtomicBool::new(false),
+            rescan_worker_running: AtomicBool::new(false),
             engines_initialized: AtomicBool::new(false),
             search_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(SEARCH_CACHE_CAPACITY).unwrap()
@@ -298,12 +304,21 @@ impl AppState {
     }
 
     /// 启动后台分类 worker（需要在 init_search_engines 之后调用）
+    /// 使用 AtomicBool 防止重复启动；vault lock 时自动退出并重置标志。
     pub fn start_classify_worker(state: std::sync::Arc<AppState>) {
         if state.classifier.lock().unwrap().is_none() {
             return; // No classifier, no worker
         }
 
+        if state.classify_worker_running.compare_exchange(
+            false, true, Ordering::SeqCst, Ordering::SeqCst,
+        ).is_err() {
+            tracing::debug!("Classify worker already running, skipping");
+            return;
+        }
+
         std::thread::spawn(move || {
+            tracing::info!("Classify worker started");
             loop {
                 // Check if vault is still unlocked
                 {
@@ -324,12 +339,21 @@ impl AppState {
                     }
                 }
             }
+            state.classify_worker_running.store(false, Ordering::SeqCst);
             tracing::info!("Classify worker stopped (vault locked)");
         });
     }
 
     /// 启动后台目录重扫 worker（每 30 分钟扫描一次绑定目录）
+    /// 使用 AtomicBool 防止重复启动；vault lock 时自动退出并重置标志。
     pub fn start_rescan_worker(state: std::sync::Arc<AppState>) {
+        if state.rescan_worker_running.compare_exchange(
+            false, true, Ordering::SeqCst, Ordering::SeqCst,
+        ).is_err() {
+            tracing::debug!("Rescan worker already running, skipping");
+            return;
+        }
+
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30 * 60)); // 30 minutes
@@ -388,6 +412,7 @@ impl AppState {
                     }
                 }
             }
+            state.rescan_worker_running.store(false, Ordering::SeqCst);
             tracing::info!("Rescan worker stopped (vault locked)");
         });
     }
@@ -545,5 +570,7 @@ impl AppState {
         *self.taxonomy.lock().unwrap() = None;
         *self.classifier.lock().unwrap() = None;
         self.search_cache.lock().unwrap().clear();
+        // 重置初始化标志，确保再次 unlock 后能重新初始化搜索引擎
+        self.engines_initialized.store(false, Ordering::SeqCst);
     }
 }
