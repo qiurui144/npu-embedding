@@ -1441,6 +1441,25 @@ mod tests {
         assert_eq!(msgs[0].citations.len(), 1);
         assert_eq!(msgs[0].citations[0].item_id, "abc");
     }
+
+    // #12: append_message 外键约束（conv_id 不存在）
+    #[test]
+    fn test_append_message_nonexistent_conv_fails() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        // 直接向不存在的 conv_id 追加消息，应返回 Err（外键约束失败）
+        let result = store.append_message(&dek, "nonexistent-conv-id", "user", "hello", &[]);
+        assert!(result.is_err(), "append_message to nonexistent conversation should fail");
+    }
+
+    // #13: get_conversation_by_id 不存在返回 None
+    #[test]
+    fn test_get_conversation_by_id_not_found() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let result = store.get_conversation_by_id(&dek, "does-not-exist").unwrap();
+        assert!(result.is_none());
+    }
 }
 
 #[cfg(test)]

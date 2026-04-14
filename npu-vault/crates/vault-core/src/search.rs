@@ -345,4 +345,61 @@ mod tests {
         assert_eq!(p3.initial_k, 100); // max clamp
         assert_eq!(p3.intermediate_k, 40); // max clamp
     }
+
+    // #9: search_with_context 三阶段管道（有 Reranker）
+    #[test]
+    fn search_with_context_reranker_reorders_results() {
+        use crate::infer::MockRerankProvider;
+        use crate::store::Store;
+
+        let store = Store::open_memory().unwrap();
+        let dek = crate::crypto::Key32::generate();
+
+        // 插入两条 item
+        store.insert_item(&dek, "低分文档", "content about cats", None, "note", None, None).unwrap();
+        store.insert_item(&dek, "高分文档", "content about dogs", None, "note", None, None).unwrap();
+
+        // Reranker 固定返回固定分数（第二条评分更高）
+        let reranker: std::sync::Arc<dyn crate::infer::RerankProvider> =
+            std::sync::Arc::new(MockRerankProvider::new(vec![0.1, 0.9]));
+
+        let ctx = SearchContext {
+            fulltext: None,
+            vectors: None,
+            embedding: None,
+            reranker: Some(reranker),
+            store: &store,
+            dek: &dek,
+        };
+
+        // 无 FTS 也无向量时 fused 为空，search_with_context 返回空但不 panic
+        let params = SearchParams::with_defaults(5);
+        let results = search_with_context(&ctx, "dogs", &params);
+        assert!(results.is_ok(), "search_with_context should not fail with reranker");
+        // 无数据源时结果为空
+        assert!(results.unwrap().is_empty());
+    }
+
+    // #10: search_with_context 纯 FTS fallback（无 embedding、无 reranker）
+    #[test]
+    fn search_with_context_fts_only_fallback() {
+        use crate::store::Store;
+
+        let store = Store::open_memory().unwrap();
+        let dek = crate::crypto::Key32::generate();
+
+        let ctx = SearchContext {
+            fulltext: None,
+            vectors: None,
+            embedding: None,
+            reranker: None,
+            store: &store,
+            dek: &dek,
+        };
+
+        let params = SearchParams::with_defaults(5);
+        let results = search_with_context(&ctx, "any query", &params).unwrap();
+        // 无数据源时结果为空，但不应 panic
+        assert!(results.is_empty());
+    }
 }

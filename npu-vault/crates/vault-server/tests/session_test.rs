@@ -63,4 +63,58 @@ mod chat_session_tests {
         let after = store.list_conversations(&dek, 1, 0).unwrap()[0].updated_at.clone();
         assert_ne!(before, after, "updated_at 应在 append_message 后更新");
     }
+
+    // #11: POST /chat 带/不带 session_id（Store 层验证）
+    #[test]
+    fn test_chat_session_auto_created_when_no_session_id() {
+        // 模拟 chat.rs 中 session_id=None 时自动创建 session 的逻辑
+        let store = Store::open_memory().unwrap();
+        let dek = make_dek();
+
+        // 没有 session_id → 创建新 session
+        let title = "第一条消息的前50字".to_string();
+        let sid = store.create_conversation(&dek, &title).unwrap();
+        store.append_message(&dek, &sid, "user", "用户问题", &[]).unwrap();
+        store.append_message(&dek, &sid, "assistant", "助手回答", &[]).unwrap();
+
+        let msgs = store.get_conversation_messages(&dek, &sid).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_chat_session_reuse_existing_session_id() {
+        // 模拟 chat.rs 中传入有效 session_id 时复用
+        let store = Store::open_memory().unwrap();
+        let dek = make_dek();
+
+        let sid = store.create_conversation(&dek, "已有会话").unwrap();
+        store.append_message(&dek, &sid, "user", "第一轮问题", &[]).unwrap();
+
+        // 第二轮：传入已有 session_id
+        assert!(store.get_conversation_by_id(&dek, &sid).unwrap().is_some());
+        store.append_message(&dek, &sid, "user", "第二轮问题", &[]).unwrap();
+        store.append_message(&dek, &sid, "assistant", "第二轮回答", &[]).unwrap();
+
+        let msgs = store.get_conversation_messages(&dek, &sid).unwrap();
+        assert_eq!(msgs.len(), 3); // 两轮 user + 一轮 assistant
+    }
+
+    // #14: DELETE /sessions/:id 返回 204（Store 层验证）
+    #[test]
+    fn test_delete_conversation_returns_no_content() {
+        let store = Store::open_memory().unwrap();
+        let dek = make_dek();
+
+        let sid = store.create_conversation(&dek, "要删除的会话").unwrap();
+        // 验证存在
+        assert!(store.get_conversation_by_id(&dek, &sid).unwrap().is_some());
+        // 删除
+        store.delete_conversation(&sid).unwrap();
+        // 验证已删除
+        assert!(store.get_conversation_by_id(&dek, &sid).unwrap().is_none());
+        // 列表为空
+        assert!(store.list_conversations(&dek, 10, 0).unwrap().is_empty());
+    }
 }
