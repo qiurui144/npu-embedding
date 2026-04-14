@@ -1,0 +1,116 @@
+// npu-vault/crates/vault-core/src/infer/reranker.rs
+
+use crate::error::{Result, VaultError};
+use crate::infer::RerankProvider;
+use ort::value::Tensor;
+use std::path::Path;
+use std::sync::Mutex;
+use tokenizers::Tokenizer;
+
+const MAX_SEQ_LEN: usize = 512;
+
+pub struct OrtRerankProvider {
+    session: Mutex<ort::session::Session>,
+    tokenizer: Tokenizer,
+}
+
+impl OrtRerankProvider {
+    pub fn new(model_path: &Path, tokenizer_path: &Path) -> Result<Self> {
+        let session = super::provider::build_session(model_path)?;
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| VaultError::Crypto(format!("load reranker tokenizer: {e}")))?;
+        Ok(Self { session: Mutex::new(session), tokenizer })
+    }
+
+    /// 便捷构造：自动下载 BAAI/bge-reranker-v2-m3 并加载
+    pub fn bge_reranker_v2_m3() -> Result<Self> {
+        let (model_path, tokenizer_path) = super::model_store::ensure_models(
+            "BAAI/bge-reranker-v2-m3",
+            "onnx/model_quantized.onnx",
+            "tokenizer.json",
+        )?;
+        Self::new(&model_path, &tokenizer_path)
+    }
+
+    fn score_one(&self, query: &str, document: &str) -> Result<f32> {
+        // 1. Tokenize pair (query, document) with special tokens
+        let encoding = self.tokenizer
+            .encode((query, document), true)
+            .map_err(|e| VaultError::Crypto(format!("tokenize pair: {e}")))?;
+
+        let seq_len = encoding.get_ids().len().min(MAX_SEQ_LEN);
+        let ids: Vec<i64> = encoding.get_ids()[..seq_len]
+            .iter().map(|&x| x as i64).collect();
+        let masks: Vec<i64> = encoding.get_attention_mask()[..seq_len]
+            .iter().map(|&x| x as i64).collect();
+        let type_ids: Vec<i64> = encoding.get_type_ids()[..seq_len]
+            .iter().map(|&x| x as i64).collect();
+
+        // 2. 构建 ort Tensor
+        let ids_tensor = Tensor::<i64>::from_array(
+            (vec![1usize, seq_len], ids)
+        ).map_err(|e| VaultError::Crypto(format!("ids tensor: {e}")))?;
+
+        let masks_tensor = Tensor::<i64>::from_array(
+            (vec![1usize, seq_len], masks)
+        ).map_err(|e| VaultError::Crypto(format!("masks tensor: {e}")))?;
+
+        let token_type_tensor = Tensor::<i64>::from_array(
+            (vec![1usize, seq_len], type_ids)
+        ).map_err(|e| VaultError::Crypto(format!("token_type tensor: {e}")))?;
+
+        // 3. ONNX 推理
+        let mut session = self.session.lock()
+            .map_err(|_| VaultError::Crypto("session mutex poisoned".into()))?;
+        let mut outputs = session
+            .run(ort::inputs! {
+                "input_ids" => ids_tensor,
+                "attention_mask" => masks_tensor,
+                "token_type_ids" => token_type_tensor
+            })
+            .map_err(|e| VaultError::Crypto(format!("ort run: {e}")))?;
+
+        // 4. 取 logits 输出，shape: [1, 1]
+        let output_key = outputs.keys().next()
+            .ok_or_else(|| VaultError::Crypto("ort no outputs".into()))?
+            .to_string();
+        let output_value = outputs.remove(&*output_key)
+            .ok_or_else(|| VaultError::Crypto("ort output missing".into()))?;
+
+        let (_shape, flat) = output_value
+            .try_extract_tensor::<f32>()
+            .map_err(|e| VaultError::Crypto(format!("extract tensor: {e}")))?;
+
+        // 5. sigmoid(logit)
+        let logit = flat.first()
+            .copied()
+            .ok_or_else(|| VaultError::Crypto("empty logits tensor".into()))?;
+        let score = 1.0f32 / (1.0 + (-logit).exp());
+        Ok(score)
+    }
+}
+
+impl RerankProvider for OrtRerankProvider {
+    fn score(&self, query: &str, documents: &[&str]) -> Result<Vec<f32>> {
+        documents.iter().map(|doc| self.score_one(query, doc)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ort_reranker_implements_trait() {
+        fn assert_impl<T: crate::infer::RerankProvider>() {}
+        assert_impl::<OrtRerankProvider>();
+    }
+
+    #[test]
+    fn sigmoid_range() {
+        let big_pos = 1.0f32 / (1.0 + (-10.0f32).exp());
+        let big_neg = 1.0f32 / (1.0 + (10.0f32).exp());
+        assert!(big_pos > 0.99);
+        assert!(big_neg < 0.01);
+    }
+}
