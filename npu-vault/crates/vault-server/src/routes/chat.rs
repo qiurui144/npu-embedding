@@ -23,10 +23,30 @@ pub struct HistoryMessage {
 }
 
 /// POST /api/v1/chat -- RAG 对话（非流式）
+/// 消息最大字节数（与 MAX_SEQ_LEN 对齐，防止 LLM 请求体过大）
+const MAX_MESSAGE_LEN: usize = 32_768;
+/// 历史消息最大条数（超限则截断至最近 N 条）
+const MAX_HISTORY_DEPTH: usize = 20;
+
 pub async fn chat(
     State(state): State<SharedState>,
-    Json(body): Json<ChatRequest>,
+    Json(mut body): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Input validation
+    if body.message.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "message cannot be empty"}))));
+    }
+    if body.message.len() > MAX_MESSAGE_LEN {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("message too long (max {MAX_MESSAGE_LEN} bytes)")
+        }))));
+    }
+    // 静默截断历史深度：保留最近 N 条
+    if body.history.len() > MAX_HISTORY_DEPTH {
+        let drop = body.history.len() - MAX_HISTORY_DEPTH;
+        body.history.drain(..drop);
+    }
+
     // Check LLM availability
     let llm = state.llm.lock()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "llm lock poisoned"}))))?
@@ -188,7 +208,7 @@ pub async fn chat(
                 tracing::warn!("failed to persist assistant message to session {sid}: {e}");
             }
         }
-        sid_opt.unwrap_or_default()
+        sid_opt
     };
 
     // 6. Build citations
@@ -203,6 +223,7 @@ pub async fn chat(
         })
         .collect();
 
+    // session_id 为 null 表示会话持久化失败（不影响本次 AI 响应）
     Ok(Json(serde_json::json!({
         "content": response,
         "citations": citations,

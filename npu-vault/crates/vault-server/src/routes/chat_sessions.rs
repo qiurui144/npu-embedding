@@ -34,9 +34,10 @@ pub async fn list_sessions(
     let dek = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
+    let limit = params.limit.min(200);
     let sessions = vault
         .store()
-        .list_conversations(&dek, params.limit, params.offset)
+        .list_conversations(&dek, limit, params.offset)
         .map_err(|e| err_500(&e.to_string()))?;
     let total = sessions.len();
     Ok(Json(serde_json::json!({

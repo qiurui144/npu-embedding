@@ -53,8 +53,9 @@ impl OrtEmbeddingProvider {
             (vec![1usize, seq_len], ids)
         ).map_err(|e| VaultError::Crypto(format!("ids tensor: {e}")))?;
 
+        // clone before move: masks 后续用于均值池化
         let masks_tensor = Tensor::<i64>::from_array(
-            (vec![1usize, seq_len], masks)
+            (vec![1usize, seq_len], masks.clone())
         ).map_err(|e| VaultError::Crypto(format!("masks tensor: {e}")))?;
 
         // 3. ONNX 推理
@@ -87,12 +88,11 @@ impl OrtEmbeddingProvider {
         let hidden_dim = shape[2] as usize;
 
         // 5. 有效 token 均值池化（flat 是 row-major: offset = t * hidden_dim + d）
+        // 复用已截断的 masks（Vec<i64>），避免再次从 encoding 取全长 mask 造成歧义
         let mut mean = vec![0.0f32; hidden_dim];
-        let attn = encoding.get_attention_mask();
-        let valid: f32 = attn[..seq_len].iter().filter(|&&m| m == 1).count()
-            .max(1) as f32;
+        let valid: f32 = masks.iter().filter(|&&m| m == 1).count().max(1) as f32;
 
-        for (t, &mask) in attn.iter().enumerate().take(seq_len) {
+        for (t, &mask) in masks.iter().enumerate() {
             if mask == 1 {
                 let offset = t * hidden_dim;
                 for d in 0..hidden_dim {
