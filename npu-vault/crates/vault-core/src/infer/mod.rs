@@ -40,7 +40,10 @@ mod tests {
 
     #[test]
     fn rerank_provider_exists() {
-        let _: Option<Box<dyn RerankProvider>> = None;
+        // Verify trait object dispatch works end-to-end
+        let mock: Box<dyn RerankProvider> = Box::new(MockRerankProvider::new(vec![0.5]));
+        let scores = mock.score("q", &["doc"]).unwrap();
+        assert_eq!(scores.len(), 1);
     }
 
     #[test]
@@ -58,5 +61,7 @@ mod tests {
         let scores = mock.score("q", &docs).unwrap();
         assert_eq!(scores.len(), 3);
         assert!((scores[0] - 0.8).abs() < 1e-5);
+        assert!((scores[1] - 0.8).abs() < 1e-5);
+        assert!((scores[2] - 0.8).abs() < 1e-5);
     }
 }
