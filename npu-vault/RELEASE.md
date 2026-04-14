@@ -24,6 +24,20 @@
 
 ---
 
+## Test Coverage Expansion (2026-04-14)
+
+### 测试覆盖补全
+
+- **Python 测试环境修复**：创建 `pytest.ini`（`pythonpath = src`），解决 `ModuleNotFoundError`，78 个测试正常收集
+- **store.rs 单元测试**（+18）：3 个新模块覆盖 `bind_directory`、`unbind_directory`、`update_dir_last_scan`、`get/upsert_indexed_file`、完整 embedding 队列生命周期（enqueue/dequeue/done/failed/pending/checkpoint）
+- **vault-server 集成测试框架**（+13）：导出 `build_router` 函数，`tests/server_test.rs` 通过 axum Router 直连测试核心路由；覆盖 vault 状态、setup/lock/unlock、ingest（成功/锁定403）、items（列表/查询/404/锁定403）
+
+### 测试
+
+- 总计 **197 tests**（vault-core: 157 + server_test: 13 + 集成测试: 27）
+
+---
+
 ## Security Hardening (2026-04-13)
 
 ### 安全修复
