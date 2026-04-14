@@ -101,6 +101,7 @@ impl VectorIndex {
     ///
     /// 若该 item 不存在任何向量或 usearch get() 失败则返回 None。
     pub fn get_vector(&self, item_id: &str) -> Option<Vec<f32>> {
+        if item_id.is_empty() { return None; }
         let keys: Vec<u64> = self.meta.iter()
             .filter(|(_, m)| m.item_id == item_id)
             .map(|(k, _)| *k)
@@ -116,7 +117,7 @@ impl VectorIndex {
         for key in &keys {
             let mut buf = vec![0.0f32; self.dims];
             if let Ok(n) = self.index.get(*key, &mut buf) {
-                if n > 0 && buf.len() == self.dims {
+                if n > 0 {
                     for (s, v) in sum.iter_mut().zip(buf.iter()) {
                         *s += v;
                     }
@@ -380,5 +381,22 @@ mod tests {
     fn get_vector_missing_item_returns_none() {
         let idx = VectorIndex::new(4).unwrap();
         assert!(idx.get_vector("ghost").is_none());
+    }
+
+    #[test]
+    fn get_vector_empty_item_id_returns_none() {
+        let idx = VectorIndex::new(4).unwrap();
+        assert!(idx.get_vector("").is_none());
+    }
+
+    #[test]
+    fn get_vector_single_chunk_equals_original() {
+        let mut idx = VectorIndex::new(3).unwrap();
+        idx.add(&[1.0, 2.0, 3.0], VectorMeta { item_id: "x".into(), chunk_idx: 0, level: 2, section_idx: 0 }).unwrap();
+        let v = idx.get_vector("x").unwrap();
+        assert_eq!(v.len(), 3);
+        assert!((v[0] - 1.0).abs() < 1e-5);
+        assert!((v[1] - 2.0).abs() < 1e-5);
+        assert!((v[2] - 3.0).abs() < 1e-5);
     }
 }
