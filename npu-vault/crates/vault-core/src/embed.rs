@@ -78,10 +78,13 @@ impl OllamaProvider {
         let rt = tokio::runtime::Handle::try_current();
         match rt {
             Ok(_handle) => {
-                // 在 async 上下文中
+                // 在 async 上下文中：在独立线程创建 Runtime 避免 runtime-in-runtime
                 let client = self.client.clone();
                 std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let rt = match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt,
+                        Err(_) => return false,
+                    };
                     rt.block_on(async { client.get(&url).send().await.is_ok() })
                 })
                 .join()
@@ -89,7 +92,10 @@ impl OllamaProvider {
             }
             Err(_) => {
                 // 在 sync 上下文中
-                let rt = tokio::runtime::Runtime::new().unwrap();
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(_) => return false,
+                };
                 rt.block_on(async { self.client.get(&url).send().await.is_ok() })
             }
         }

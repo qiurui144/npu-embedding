@@ -128,7 +128,7 @@ impl QueueWorker {
             Ok(embs) => embs,
             Err(e) => {
                 // 标记为失败
-                let s = store.lock().unwrap();
+                let s = store.lock().unwrap_or_else(|e| e.into_inner());
                 for task in &tasks {
                     let _ = s.mark_embedding_failed(task.id, MAX_ATTEMPTS);
                 }

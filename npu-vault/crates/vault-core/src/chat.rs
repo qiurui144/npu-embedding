@@ -84,11 +84,11 @@ impl ChatEngine {
     }
 
     fn search_for_context(&self, query: &str, dek: &Key32, top_k: usize) -> Result<Vec<SearchResult>> {
-        let ft_guard = self.fulltext.lock().unwrap();
-        let vec_guard = self.vectors.lock().unwrap();
-        let emb_guard = self.embedding.lock().unwrap();
-        let reranker_guard = self.reranker.lock().unwrap();
-        let store_guard = self.store.lock().unwrap();
+        let ft_guard = self.fulltext.lock().unwrap_or_else(|e| e.into_inner());
+        let vec_guard = self.vectors.lock().unwrap_or_else(|e| e.into_inner());
+        let emb_guard = self.embedding.lock().unwrap_or_else(|e| e.into_inner());
+        let reranker_guard = self.reranker.lock().unwrap_or_else(|e| e.into_inner());
+        let store_guard = self.store.lock().unwrap_or_else(|e| e.into_inner());
 
         let ctx = crate::search::SearchContext {
             fulltext: ft_guard.as_ref(),
@@ -107,7 +107,7 @@ impl ChatEngine {
     fn auto_save_conversation(&self, user_msg: &str, assistant_msg: &str, dek: &Key32) -> Result<()> {
         let content = format!("用户: {}\n\n助手: {}", user_msg, assistant_msg);
         let title = user_msg.chars().take(50).collect::<String>();
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         let _ = store.insert_item(dek, &title, &content, None, "ai_chat", None, None);
         Ok(())
     }
