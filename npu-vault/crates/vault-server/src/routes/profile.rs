@@ -22,7 +22,7 @@ pub struct VaultProfile {
 pub async fn export(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let dek = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
@@ -44,7 +44,7 @@ pub async fn export(
 
     // Histograms snapshot
     let mut histograms = std::collections::HashMap::new();
-    if let Some(index) = state.tag_index.lock().unwrap().as_ref() {
+    if let Some(index) = state.tag_index.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         for dim in index.all_dimensions() {
             if dim == "entities" { continue; }
             let hist = index.histogram(&dim);
@@ -56,7 +56,7 @@ pub async fn export(
     }
 
     // Cluster snapshot
-    let cluster_snapshot = state.cluster_snapshot.lock().unwrap()
+    let cluster_snapshot = state.cluster_snapshot.lock().unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|s| serde_json::to_value(s).ok());
 
@@ -88,7 +88,7 @@ pub async fn import(
         }))));
     }
 
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let dek = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
@@ -117,12 +117,12 @@ pub async fn import(
 
     // Rebuild tag index to pick up merged tags
     {
-        let vault = state.vault.lock().unwrap();
+        let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
         let dek = vault.dek_db().map_err(|e| {
             (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
         })?;
         if let Ok(new_index) = vault_core::tag_index::TagIndex::build(vault.store(), &dek) {
-            *state.tag_index.lock().unwrap() = Some(new_index);
+            *state.tag_index.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_index);
         }
     }
 

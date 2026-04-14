@@ -7,7 +7,7 @@ use crate::state::SharedState;
 pub async fn all_dimensions(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let tag_index = state.tag_index.lock().unwrap();
+    let tag_index = state.tag_index.lock().unwrap_or_else(|e| e.into_inner());
     let index = match tag_index.as_ref() {
         Some(i) => i,
         None => return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "vault locked or tag index unavailable"})))),
@@ -32,7 +32,7 @@ pub async fn dimension_histogram(
     State(state): State<SharedState>,
     Path(dimension): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let tag_index = state.tag_index.lock().unwrap();
+    let tag_index = state.tag_index.lock().unwrap_or_else(|e| e.into_inner());
     let index = match tag_index.as_ref() {
         Some(i) => i,
         None => return Err((StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "vault locked or tag index unavailable"})))),

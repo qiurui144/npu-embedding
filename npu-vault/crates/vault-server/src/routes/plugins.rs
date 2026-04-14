@@ -9,7 +9,7 @@ pub async fn list(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // First try from AppState's loaded taxonomy
-    if let Some(tax) = state.taxonomy.lock().unwrap().as_ref() {
+    if let Some(tax) = state.taxonomy.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let list: Vec<serde_json::Value> = tax.plugins.iter().map(|p| serde_json::json!({
             "id": p.id,
             "name": p.name,

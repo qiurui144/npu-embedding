@@ -63,7 +63,7 @@ pub async fn upload_file(
     }
 
     // Now lock vault for DB operations (no more await points after this)
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let dek = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,
@@ -83,7 +83,7 @@ pub async fn upload_file(
 
     // Add to fulltext index immediately (search works without AI)
     {
-        let ft_guard = state.fulltext.lock().unwrap();
+        let ft_guard = state.fulltext.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ft) = ft_guard.as_ref() {
             let _ = ft.add_document(&item_id, &title, &content, "file");
         }

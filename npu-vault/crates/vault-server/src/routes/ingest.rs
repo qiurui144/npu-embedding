@@ -21,10 +21,26 @@ fn default_source_type() -> String {
     "note".into()
 }
 
+/// JSON ingest 内容上限（防止大负载写放大攻击）
+const MAX_INGEST_CONTENT: usize = 2 * 1024 * 1024; // 2 MB
+const MAX_INGEST_TITLE: usize = 500;
+
 pub async fn ingest(
     State(state): State<SharedState>,
     Json(body): Json<IngestRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    if body.title.len() > MAX_INGEST_TITLE {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": format!("title too long (max {MAX_INGEST_TITLE} bytes)")})),
+        ));
+    }
+    if body.content.len() > MAX_INGEST_CONTENT {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": format!("content too large: {} bytes (max {MAX_INGEST_CONTENT})", body.content.len())})),
+        ));
+    }
     let vault = state.vault.lock()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "vault lock poisoned"}))))?;
     let dek = vault.dek_db().map_err(|e| {

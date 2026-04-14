@@ -160,6 +160,9 @@ fn parse_propfind_response(xml: &str) -> Result<Vec<RemoteFile>> {
     Ok(files)
 }
 
+/// WebDAV 单文件下载大小上限（与本地 upload 一致）
+const MAX_REMOTE_FILE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB
+
 /// Download a remote file (GET)
 pub fn fetch_file(config: &WebDavConfig, href: &str) -> Result<Vec<u8>> {
     let client = reqwest::blocking::Client::builder()
@@ -185,6 +188,21 @@ pub fn fetch_file(config: &WebDavConfig, href: &str) -> Result<Vec<u8>> {
         format!("{scheme}://{host}{href}")
     };
 
+    // SSRF 防护：校验最终请求 URL 的 host 与用户配置的 base URL 一致
+    let config_host = config.url.split("://")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    let fetch_host = url.split("://")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or("");
+    if fetch_host != config_host {
+        return Err(VaultError::LlmUnavailable(format!(
+            "href host '{fetch_host}' does not match config host '{config_host}'"
+        )));
+    }
+
     let mut req = client.get(&url);
     if let (Some(user), Some(pass)) = (&config.username, &config.password) {
         req = req.basic_auth(user, Some(pass));
@@ -201,9 +219,15 @@ pub fn fetch_file(config: &WebDavConfig, href: &str) -> Result<Vec<u8>> {
         )));
     }
 
-    resp.bytes()
-        .map(|b| b.to_vec())
-        .map_err(|e| VaultError::LlmUnavailable(format!("fetch body: {e}")))
+    let bytes = resp.bytes()
+        .map_err(|e| VaultError::LlmUnavailable(format!("fetch body: {e}")))?;
+    if bytes.len() as u64 > MAX_REMOTE_FILE_BYTES {
+        return Err(VaultError::LlmUnavailable(format!(
+            "remote file too large: {} bytes (max {MAX_REMOTE_FILE_BYTES})",
+            bytes.len()
+        )));
+    }
+    Ok(bytes.to_vec())
 }
 
 /// Scan remote WebDAV directory: list + download supported files + ingest
@@ -237,6 +261,13 @@ pub fn scan_remote(
         let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
         if !supported_exts.contains(&ext.as_str()) {
             result.skipped_files += 1;
+            continue;
+        }
+
+        // size == 0 means server didn't report size; allow through (fetch will enforce limit)
+        if file.size > MAX_REMOTE_FILE_BYTES {
+            result.skipped_files += 1;
+            result.errors.push(format!("{filename}: file too large ({} bytes)", file.size));
             continue;
         }
 

@@ -84,7 +84,7 @@ pub async fn bind_directory(
     State(state): State<SharedState>,
     Json(body): Json<BindRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let dek = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,
@@ -125,7 +125,7 @@ pub async fn bind_directory(
             })?;
 
     {
-        let ft_guard = state.fulltext.lock().unwrap();
+        let ft_guard = state.fulltext.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ft) = ft_guard.as_ref() {
             if let Ok(ids) = vault.store().list_all_item_ids() {
                 for id in &ids {
@@ -153,7 +153,7 @@ pub async fn unbind_directory(
     State(state): State<SharedState>,
     Query(params): Query<UnbindQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let _ = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,
@@ -174,7 +174,7 @@ pub async fn unbind_directory(
 pub async fn index_status(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let _ = vault.dek_db().map_err(|e| {
         (
             StatusCode::FORBIDDEN,

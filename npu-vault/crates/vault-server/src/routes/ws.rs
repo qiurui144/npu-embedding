@@ -19,7 +19,7 @@ async fn handle_scan_progress(mut socket: WebSocket, state: SharedState) {
 
     loop {
         let payload = {
-            let vault_guard = state.vault.lock().unwrap();
+            let vault_guard = state.vault.lock().unwrap_or_else(|e| e.into_inner());
             let vault_state = vault_guard.state();
 
             if !matches!(vault_state, VaultState::Unlocked) {

@@ -8,7 +8,7 @@ const SETTINGS_KEY: &str = "app_settings";
 pub async fn get_settings(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let _ = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
@@ -29,7 +29,7 @@ pub async fn update_settings(
     State(state): State<SharedState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let _ = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;

@@ -31,7 +31,7 @@ pub async fn bind_remote(
 
     // Create bound_dirs record with special prefix to mark as remote
     let dir_id = {
-        let vault = state.vault.lock().unwrap();
+        let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
         let _ = vault.dek_db().map_err(|e| {
             (
                 StatusCode::FORBIDDEN,
@@ -54,7 +54,7 @@ pub async fn bind_remote(
     let state_clone = state.clone();
     let dir_id_clone = dir_id.clone();
     let scan_result = tokio::task::spawn_blocking(move || {
-        let vault = state_clone.vault.lock().unwrap();
+        let vault = state_clone.vault.lock().unwrap_or_else(|e| e.into_inner());
         let dek = vault.dek_db()?;
         scan_remote(&config, vault.store(), &dek, &dir_id_clone)
     })

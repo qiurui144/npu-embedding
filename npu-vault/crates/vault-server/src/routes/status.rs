@@ -49,23 +49,23 @@ pub async fn status(
 pub async fn diagnostics(
     State(state): State<SharedState>,
 ) -> Json<serde_json::Value> {
-    let vault_state = state.vault.lock().unwrap().state();
+    let vault_state = state.vault.lock().unwrap_or_else(|e| e.into_inner()).state();
 
-    let embedding_available = state.embedding.lock().unwrap().is_some();
-    let classifier_ready = state.classifier.lock().unwrap().is_some();
+    let embedding_available = state.embedding.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let classifier_ready = state.classifier.lock().unwrap_or_else(|e| e.into_inner()).is_some();
 
-    let chat_model = state.llm.lock().unwrap()
+    let chat_model = state.llm.lock().unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(|l| l.model_name().to_string())
         .unwrap_or_default();
 
     let pending_tasks = if matches!(vault_state, VaultState::Unlocked) {
-        state.vault.lock().unwrap().store().pending_embedding_count().unwrap_or(0)
+        state.vault.lock().unwrap_or_else(|e| e.into_inner()).store().pending_embedding_count().unwrap_or(0)
     } else { 0 };
 
-    let fulltext_ready = state.fulltext.lock().unwrap().is_some();
-    let vector_ready = state.vectors.lock().unwrap().is_some();
-    let tag_index_count = state.tag_index.lock().unwrap()
+    let fulltext_ready = state.fulltext.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let vector_ready = state.vectors.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let tag_index_count = state.tag_index.lock().unwrap_or_else(|e| e.into_inner())
         .as_ref().map(|i| i.item_count()).unwrap_or(0);
 
     // Determine overall AI status

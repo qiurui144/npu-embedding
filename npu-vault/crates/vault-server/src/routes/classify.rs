@@ -8,7 +8,7 @@ pub async fn classify_one(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let classifier_arc = state.classifier.lock().unwrap().as_ref().cloned();
+    let classifier_arc = state.classifier.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned();
     let classifier = match classifier_arc {
         Some(c) => c,
         None => return Err((StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
@@ -18,7 +18,7 @@ pub async fn classify_one(
     };
 
     let (title, content) = {
-        let vault = state.vault.lock().unwrap();
+        let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
         let dek = vault.dek_db().map_err(|e| {
             (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
         })?;
@@ -38,14 +38,14 @@ pub async fn classify_one(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
 
     {
-        let vault = state.vault.lock().unwrap();
+        let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
         let dek = vault.dek_db().map_err(|e| (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()}))))?;
         vault.store().update_tags(&dek, &id, &tags_json)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
     }
 
     {
-        let mut tag_index = state.tag_index.lock().unwrap();
+        let mut tag_index = state.tag_index.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(index) = tag_index.as_mut() {
             index.upsert(&id, &result);
         }
@@ -58,7 +58,7 @@ pub async fn classify_one(
 pub async fn rebuild(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock().unwrap();
+    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
     let _ = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;
