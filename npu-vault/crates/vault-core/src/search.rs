@@ -86,7 +86,8 @@ pub fn rrf_fuse(
 pub fn allocate_budget(results: &mut [SearchResult], budget: usize) {
     let total_score: f32 = results.iter().map(|r| r.score).sum();
     if total_score <= 0.0 || results.is_empty() {
-        let per_item = budget / results.len().max(1);
+        // 保证每条至少 100 字符，与正比路径中 .max(100.0) 对齐
+        let per_item = (budget / results.len().max(1)).max(100);
         for r in results.iter_mut() {
             let content = &r.content;
             let end = content.char_indices()

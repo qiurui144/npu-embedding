@@ -58,6 +58,9 @@ pub enum VaultError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("model load error: {0}")]
+    ModelLoad(String),
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;

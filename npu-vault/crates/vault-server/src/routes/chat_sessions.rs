@@ -77,6 +77,7 @@ pub async fn delete_session(
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
+    // 仅校验 vault 已解锁（DEK 本身不用于 delete，不需要传给 store）
     let _ = vault.dek_db().map_err(|e| {
         (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
     })?;

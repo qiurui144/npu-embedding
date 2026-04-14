@@ -12,13 +12,13 @@ pub fn model_cache_dir(repo_id: &str) -> PathBuf {
 /// 计算文件的 SHA256 十六进制字符串
 fn file_sha256(path: &std::path::Path) -> Result<String> {
     let mut file = std::fs::File::open(path)
-        .map_err(|e| VaultError::Crypto(format!("open file for sha256: {e}")))?;
+        .map_err(|e| VaultError::ModelLoad(format!("open file for sha256: {e}")))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
     loop {
         let n = file
             .read(&mut buf)
-            .map_err(|e| VaultError::Crypto(format!("read file for sha256: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("read file for sha256: {e}")))?;
         if n == 0 {
             break;
         }
@@ -39,12 +39,12 @@ fn verify_or_record_sha256(file_path: &std::path::Path) -> Result<()> {
     let actual = file_sha256(file_path)?;
     if sha_path.exists() {
         let expected = std::fs::read_to_string(&sha_path)
-            .map_err(|e| VaultError::Crypto(format!("read sha256 file: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("read sha256 file: {e}")))?;
         let expected = expected.trim();
         if actual != expected {
             let _ = std::fs::remove_file(file_path);
             let _ = std::fs::remove_file(&sha_path);
-            return Err(VaultError::Crypto(format!(
+            return Err(VaultError::ModelLoad(format!(
                 "SHA256 mismatch for {}: expected {expected}, got {actual}; file deleted, re-download required",
                 file_path.display()
             )));
@@ -52,7 +52,7 @@ fn verify_or_record_sha256(file_path: &std::path::Path) -> Result<()> {
     } else {
         // 首次：记录哈希
         std::fs::write(&sha_path, &actual)
-            .map_err(|e| VaultError::Crypto(format!("write sha256 file: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("write sha256 file: {e}")))?;
     }
     Ok(())
 }
@@ -68,7 +68,7 @@ pub fn ensure_models(
 ) -> Result<(PathBuf, PathBuf)> {
     let cache_dir = model_cache_dir(repo_id);
     std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| VaultError::Crypto(format!("create model dir: {e}")))?;
+        .map_err(|e| VaultError::ModelLoad(format!("create model dir: {e}")))?;
 
     // 取文件名末段（model_filename 可能含路径如 "onnx/model_quantized.onnx"）
     let model_basename = model_filename.rsplit('/').next().unwrap_or(model_filename);
@@ -89,21 +89,21 @@ pub fn ensure_models(
     }
 
     let api = hf_hub::api::sync::Api::new()
-        .map_err(|e| VaultError::Crypto(format!("hf-hub init: {e}")))?;
+        .map_err(|e| VaultError::ModelLoad(format!("hf-hub init: {e}")))?;
     let repo = api.model(repo_id.to_string());
 
     if !model_path.exists() {
         let src = repo.get(model_filename)
-            .map_err(|e| VaultError::Crypto(format!("download {model_filename}: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("download {model_filename}: {e}")))?;
         std::fs::copy(&src, &model_path)
-            .map_err(|e| VaultError::Crypto(format!("copy model file: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("copy model file: {e}")))?;
     }
 
     if !tokenizer_path.exists() {
         let src = repo.get(tokenizer_filename)
-            .map_err(|e| VaultError::Crypto(format!("download {tokenizer_filename}: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("download {tokenizer_filename}: {e}")))?;
         std::fs::copy(&src, &tokenizer_path)
-            .map_err(|e| VaultError::Crypto(format!("copy tokenizer file: {e}")))?;
+            .map_err(|e| VaultError::ModelLoad(format!("copy tokenizer file: {e}")))?;
     }
 
     // 完整性校验（首次写入 .sha256；后续对比）

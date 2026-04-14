@@ -1,6 +1,33 @@
 use crate::error::{Result, VaultError};
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+/// 共享 tokio Runtime，供所有 LLM 同步 HTTP 调用复用。
+/// 使用独立 Runtime 而非主 Runtime，避免在 spawn_blocking / 测试上下文中
+/// 调用 block_on 时触发 "Cannot start a runtime from within a runtime" panic。
+fn llm_rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("llm-rt")
+            .enable_all()
+            .build()
+            .expect("llm tokio runtime init failed")
+    })
+}
+
+/// 在独立线程中运行 async future，复用共享 LLM Runtime。
+/// 线程逃逸确保不在主 tokio 上下文中直接 block_on（避免 runtime-within-runtime）。
+fn llm_block_on<F, T>(f: F) -> crate::error::Result<T>
+where
+    F: std::future::Future<Output = crate::error::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::spawn(move || llm_rt().block_on(f))
+        .join()
+        .map_err(|_| VaultError::LlmUnavailable("llm worker thread panicked".into()))?
+}
 
 /// 对话消息（公开，用于多轮对话）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,19 +145,13 @@ impl OllamaLlmProvider {
         let client = provider.client.clone();
         let url = format!("{}/api/tags", provider.base_url);
 
-        let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| VaultError::Crypto(format!("tokio runtime: {e}")))?;
-            rt.block_on(async move {
-                let resp = client.get(&url).send().await
-                    .map_err(|e| VaultError::LlmUnavailable(format!("ollama unreachable: {e}")))?;
-                let tags: TagsResponse = resp.json().await
-                    .map_err(|e| VaultError::LlmUnavailable(format!("parse tags: {e}")))?;
-                Ok::<Vec<String>, VaultError>(tags.models.into_iter().map(|m| m.name).collect())
-            })
-        });
-        let available: Vec<String> = handle.join()
-            .map_err(|_| VaultError::Crypto("auto_detect thread panicked".into()))??;
+        let available: Vec<String> = llm_block_on(async move {
+            let resp = client.get(&url).send().await
+                .map_err(|e| VaultError::LlmUnavailable(format!("ollama unreachable: {e}")))?;
+            let tags: TagsResponse = resp.json().await
+                .map_err(|e| VaultError::LlmUnavailable(format!("parse tags: {e}")))?;
+            Ok(tags.models.into_iter().map(|m| m.name).collect())
+        })?;
 
         for preferred in PREFERRED_MODELS {
             if available.iter().any(|a| a.starts_with(preferred)) {
@@ -159,22 +180,16 @@ impl OllamaLlmProvider {
         let client = self.client.clone();
         let body_json = serde_json::to_vec(&body)?;
 
-        let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| VaultError::Crypto(format!("tokio runtime: {e}")))?;
-            rt.block_on(async move {
-                let resp = client.post(&url)
-                    .header("Content-Type", "application/json")
-                    .body(body_json)
-                    .send().await
-                    .map_err(|e| VaultError::LlmUnavailable(format!("chat request: {e}")))?;
-                let parsed: OllamaChatResponse = resp.json().await
-                    .map_err(|e| VaultError::Classification(format!("parse chat response: {e}")))?;
-                Ok::<String, VaultError>(parsed.message.content)
-            })
-        });
-        handle.join()
-            .map_err(|_| VaultError::Crypto("chat thread panicked".into()))?
+        llm_block_on(async move {
+            let resp = client.post(&url)
+                .header("Content-Type", "application/json")
+                .body(body_json)
+                .send().await
+                .map_err(|e| VaultError::LlmUnavailable(format!("chat request: {e}")))?;
+            let parsed: OllamaChatResponse = resp.json().await
+                .map_err(|e| VaultError::Classification(format!("parse chat response: {e}")))?;
+            Ok(parsed.message.content)
+        })
     }
 }
 
@@ -196,35 +211,25 @@ impl LlmProvider for OllamaLlmProvider {
         let client = self.client.clone();
         let body_bytes = serde_json::to_vec(&body)?;
 
-        let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| VaultError::Crypto(format!("tokio: {e}")))?;
-            rt.block_on(async move {
-                let resp = client.post(&url)
-                    .header("Content-Type", "application/json")
-                    .body(body_bytes).send().await
-                    .map_err(|e| VaultError::LlmUnavailable(format!("chat: {e}")))?;
-                let parsed: OllamaChatResponse = resp.json().await
-                    .map_err(|e| VaultError::Classification(format!("parse: {e}")))?;
-                Ok::<String, VaultError>(parsed.message.content)
-            })
-        });
-        handle.join().map_err(|_| VaultError::Crypto("thread panic".into()))?
+        llm_block_on(async move {
+            let resp = client.post(&url)
+                .header("Content-Type", "application/json")
+                .body(body_bytes).send().await
+                .map_err(|e| VaultError::LlmUnavailable(format!("chat: {e}")))?;
+            let parsed: OllamaChatResponse = resp.json().await
+                .map_err(|e| VaultError::Classification(format!("parse: {e}")))?;
+            Ok(parsed.message.content)
+        })
     }
 
     fn is_available(&self) -> bool {
         let client = self.client.clone();
         let url = format!("{}/api/tags", self.base_url);
-        let handle = std::thread::spawn(move || {
-            let rt = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt,
-                Err(_) => return false,
-            };
-            rt.block_on(async move {
-                client.get(&url).send().await.is_ok()
-            })
-        });
-        handle.join().unwrap_or(false)
+        llm_block_on(async move {
+            client.get(&url).send().await
+                .map(|_| ())
+                .map_err(|e| VaultError::LlmUnavailable(e.to_string()))
+        }).is_ok()
     }
 
     fn model_name(&self) -> &str {
@@ -284,27 +289,21 @@ impl OpenAiLlmProvider {
         let client = self.client.clone();
         let body_bytes = serde_json::to_vec(&body)?;
         let api_key = self.api_key.clone();
-        let url_clone = url.clone();
 
-        let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| VaultError::Crypto(format!("tokio runtime: {e}")))?;
-            rt.block_on(async move {
-                let resp = client
-                    .post(&url_clone)
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", format!("Bearer {api_key}"))
-                    .body(body_bytes)
-                    .send().await
-                    .map_err(|e| VaultError::LlmUnavailable(format!("openai request: {e}")))?;
-                let parsed: OpenAiResponse = resp.json().await
-                    .map_err(|e| VaultError::Classification(format!("parse openai response: {e}")))?;
-                parsed.choices.into_iter().next()
-                    .map(|c| c.message.content)
-                    .ok_or_else(|| VaultError::Classification("empty choices".into()))
-            })
-        });
-        handle.join().map_err(|_| VaultError::Crypto("thread panic".into()))?
+        llm_block_on(async move {
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {api_key}"))
+                .body(body_bytes)
+                .send().await
+                .map_err(|e| VaultError::LlmUnavailable(format!("openai request: {e}")))?;
+            let parsed: OpenAiResponse = resp.json().await
+                .map_err(|e| VaultError::Classification(format!("parse openai response: {e}")))?;
+            parsed.choices.into_iter().next()
+                .map(|c| c.message.content)
+                .ok_or_else(|| VaultError::Classification("empty choices".into()))
+        })
     }
 }
 

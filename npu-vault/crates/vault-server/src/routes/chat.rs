@@ -115,7 +115,7 @@ pub async fn chat(
                 "[{}] 《{}》(相关度: {:.0}%)\n{}\n\n",
                 i + 1,
                 title,
-                score * 100.0,
+                score.max(0.0) * 100.0,
                 content
             ));
         }
