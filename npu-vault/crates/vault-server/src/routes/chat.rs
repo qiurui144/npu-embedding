@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 use vault_core::llm::ChatMessage;
-use vault_core::search::rrf_fuse;
 
 use crate::state::SharedState;
 
@@ -52,75 +51,48 @@ pub async fn chat(
         })?
     };
 
-    // 1. Search knowledge base (fulltext)
-    let ft_results = {
-        let ft_guard = state.fulltext.lock().unwrap();
-        match ft_guard.as_ref() {
-            Some(ft) => ft.search(&body.message, 5).unwrap_or_default(),
-            None => vec![],
-        }
+    // 1. Search knowledge base via three-stage pipeline (initial_k → rerank → top_k)
+    let search_params = vault_core::search::SearchParams::with_defaults(5);
+    let reranker = state.reranker.lock().map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "reranker lock"})))
+    })?.clone();
+    let emb = state.embedding.lock().map_err(|_| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "emb lock"})))
+    })?.clone();
+
+    let search_results = {
+        let ft_guard = state.fulltext.lock().map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "ft lock"})))
+        })?;
+        let vec_guard = state.vectors.lock().map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "vec lock"})))
+        })?;
+        let vault_guard = state.vault.lock().map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "vault lock"})))
+        })?;
+
+        let ctx = vault_core::search::SearchContext {
+            fulltext: ft_guard.as_ref(),
+            vectors: vec_guard.as_ref(),
+            embedding: emb,
+            reranker,
+            store: vault_guard.store(),
+            dek: &dek,
+        };
+        vault_core::search::search_with_context(&ctx, &body.message, &search_params)
+            .unwrap_or_default()
     };
 
-    // Vector search (via spawn_blocking to allow nested tokio runtime in OllamaProvider)
-    let vec_results = {
-        let emb_opt = state.embedding.lock().ok().and_then(|g| g.clone());
-        let vec_exists = state
-            .vectors
-            .lock()
-            .ok()
-            .map(|g| g.is_some())
-            .unwrap_or(false);
-
-        match (emb_opt, vec_exists) {
-            (Some(emb), true) => {
-                let query_owned = body.message.clone();
-                let state_clone = state.clone();
-                tokio::task::spawn_blocking(move || {
-                    let embeddings = match emb.embed(&[&query_owned]) {
-                        Ok(e) if !e.is_empty() => e,
-                        _ => return vec![],
-                    };
-                    let vec_guard = match state_clone.vectors.lock() {
-                        Ok(g) => g,
-                        Err(_) => return vec![],
-                    };
-                    match vec_guard.as_ref() {
-                        Some(vecs) => vecs
-                            .search(&embeddings[0], 5)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(meta, score)| (meta.item_id, score))
-                            .collect(),
-                        None => vec![],
-                    }
-                })
-                .await
-                .unwrap_or_default()
-            }
-            _ => vec![],
-        }
-    };
-
-    // RRF fuse
-    let fused = rrf_fuse(&vec_results, &ft_results, 0.6, 0.4, 5);
-
-    // Fetch items for context
-    let knowledge: Vec<serde_json::Value> = {
-        let vault = state.vault.lock().unwrap();
-        let mut results = Vec::new();
-        for (item_id, score) in &fused {
-            if let Ok(Some(item)) = vault.store().get_item(&dek, item_id) {
-                results.push(serde_json::json!({
-                    "item_id": item.id,
-                    "title": item.title,
-                    "content": item.content,
-                    "score": score,
-                    "source_type": item.source_type,
-                }));
-            }
-        }
-        results
-    };
+    let knowledge: Vec<serde_json::Value> = search_results
+        .iter()
+        .map(|r| serde_json::json!({
+            "item_id": r.item_id,
+            "title": r.title,
+            "content": r.content,
+            "score": r.score,
+            "source_type": r.source_type,
+        }))
+        .collect();
 
     // 2. Build RAG system prompt
     let mut system_prompt = String::from(

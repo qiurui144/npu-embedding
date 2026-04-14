@@ -196,17 +196,17 @@ pub fn search_with_context(
     }
 
     // 5. Rerank（有 Reranker 时用 cross-encoder；有 query 向量时用余弦；否则跳过）
-    if params.intermediate_k <= RERANK_TOP_K_THRESHOLD {
-        if let Some(reranker) = &ctx.reranker {
-            let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
-            if let Ok(scores) = reranker.score(query, &docs) {
-                for (r, s) in results.iter_mut().zip(scores.iter()) {
-                    r.score = *s;
-                }
-                results.sort_by(|a, b| b.score.partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal));
+    if let Some(reranker) = &ctx.reranker {
+        let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
+        if let Ok(scores) = reranker.score(query, &docs) {
+            for (r, s) in results.iter_mut().zip(scores.iter()) {
+                r.score = *s;
             }
-        } else if let Some(qvec) = &query_vec {
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal));
+        }
+    } else if params.intermediate_k <= RERANK_TOP_K_THRESHOLD {
+        if let Some(qvec) = &query_vec {
             if let Some(vecs) = ctx.vectors {
                 rerank(qvec, &mut results, vecs);
             }
