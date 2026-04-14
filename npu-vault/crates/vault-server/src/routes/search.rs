@@ -2,9 +2,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
-use vault_core::search::{
-    allocate_budget, rerank, rrf_fuse, SearchResult, INJECTION_BUDGET, RERANK_TOP_K_THRESHOLD,
-};
+use vault_core::search::{allocate_budget, SearchResult, INJECTION_BUDGET};
 
 use crate::state::SharedState;
 
@@ -13,6 +11,8 @@ pub struct SearchQuery {
     pub q: String,
     #[serde(default = "default_top_k")]
     pub top_k: usize,
+    pub initial_k: Option<usize>,
+    pub intermediate_k: Option<usize>,
 }
 
 fn default_top_k() -> usize {
@@ -36,50 +36,6 @@ fn err_500(msg: &str) -> ApiError {
     )
 }
 
-/// Embed query text and run vector search.
-/// Returns (vector_search_results, query_embedding).
-/// query_embedding is Some when embedding succeeded, None otherwise.
-async fn embed_query(
-    state: &SharedState,
-    query: &str,
-) -> (Vec<(String, f32)>, Option<Vec<f32>>) {
-    let emb_opt = state.embedding.lock().ok().and_then(|g| g.clone());
-    let vec_opt_exists = state.vectors.lock().ok().map(|g| g.is_some()).unwrap_or(false);
-
-    let (emb, _) = match (emb_opt, vec_opt_exists) {
-        (Some(emb), true) => (emb, ()),
-        _ => return (vec![], None),
-    };
-
-    let query_owned = query.to_string();
-    let state_clone = state.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let embeddings = match emb.embed(&[&query_owned]) {
-            Ok(e) if !e.is_empty() => e,
-            _ => return (vec![], None),
-        };
-        let query_vec = embeddings[0].clone();
-        let vec_guard = match state_clone.vectors.lock() {
-            Ok(g) => g,
-            Err(_) => return (vec![], None),
-        };
-        let search_results = match vec_guard.as_ref() {
-            Some(vecs) => vecs
-                .search(&query_vec, 10)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(meta, score)| (meta.item_id, score))
-                .collect(),
-            None => vec![],
-        };
-        (search_results, Some(query_vec))
-    })
-    .await;
-
-    result.unwrap_or((vec![], None))
-}
-
 pub async fn search(
     State(state): State<SharedState>,
     Query(params): Query<SearchQuery>,
@@ -99,6 +55,13 @@ pub async fn search(
         }
     }
 
+    let search_params = {
+        let mut p = vault_core::search::SearchParams::with_defaults(params.top_k);
+        if let Some(ik) = params.initial_k { p.initial_k = ik; }
+        if let Some(imk) = params.intermediate_k { p.intermediate_k = imk; }
+        p
+    };
+
     let dek = {
         let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
         vault.dek_db().map_err(|e| {
@@ -109,46 +72,25 @@ pub async fn search(
         })?
     };
 
-    // Fulltext search
-    let ft_results = {
-        let ft_guard = state.fulltext.lock().map_err(|_| err_500("fulltext lock poisoned"))?;
-        match ft_guard.as_ref() {
-            Some(ft) => ft.search(&params.q, params.top_k).unwrap_or_default(),
-            None => vec![],
-        }
+    let reranker = state.reranker.lock().map_err(|_| err_500("reranker lock"))?.clone();
+    let emb = state.embedding.lock().map_err(|_| err_500("emb lock"))?.clone();
+
+    let results = {
+        let ft_guard = state.fulltext.lock().map_err(|_| err_500("ft lock"))?;
+        let vec_guard = state.vectors.lock().map_err(|_| err_500("vec lock"))?;
+        let vault_guard = state.vault.lock().map_err(|_| err_500("vault lock"))?;
+
+        let ctx = vault_core::search::SearchContext {
+            fulltext: ft_guard.as_ref(),
+            vectors: vec_guard.as_ref(),
+            embedding: emb,
+            reranker,
+            store: vault_guard.store(),
+            dek: &dek,
+        };
+        vault_core::search::search_with_context(&ctx, &params.q, &search_params)
+            .map_err(|e| err_500(&e.to_string()))?
     };
-
-    // Vector search (if embedding available)
-    let (vec_results, query_vec) = embed_query(&state, &params.q).await;
-
-    // RRF fusion
-    let fused = rrf_fuse(&vec_results, &ft_results, 0.6, 0.4, params.top_k);
-
-    // Fetch and decrypt items
-    let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
-    let mut results: Vec<SearchResult> = Vec::new();
-    for (item_id, score) in &fused {
-        if let Ok(Some(item)) = vault.store().get_item(&dek, item_id) {
-            results.push(SearchResult {
-                item_id: item.id,
-                score: *score,
-                title: item.title,
-                content: item.content,
-                source_type: item.source_type,
-                inject_content: None,
-            });
-        }
-    }
-
-    // Rerank when top_k is small enough and query vector is available
-    if params.top_k <= RERANK_TOP_K_THRESHOLD {
-        if let Some(qvec) = query_vec {
-            let vec_guard = state.vectors.lock().map_err(|_| err_500("vectors lock poisoned"))?;
-            if let Some(vecs) = vec_guard.as_ref() {
-                rerank(&qvec, &mut results, vecs);
-            }
-        }
-    }
 
     {
         let mut cache = state.search_cache.lock().map_err(|_| err_500("cache lock poisoned"))?;
@@ -173,6 +115,13 @@ pub async fn search_relevant(
     let top_k = body.top_k.unwrap_or(5);
     let budget = body.injection_budget.unwrap_or(INJECTION_BUDGET);
 
+    let search_params = {
+        let mut p = vault_core::search::SearchParams::with_defaults(top_k);
+        if let Some(ik) = body.initial_k { p.initial_k = ik; }
+        if let Some(imk) = body.intermediate_k { p.intermediate_k = imk; }
+        p
+    };
+
     let dek = {
         let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
         vault.dek_db().map_err(|e| {
@@ -183,46 +132,25 @@ pub async fn search_relevant(
         })?
     };
 
-    // Fulltext search
-    let ft_results = {
-        let ft_guard = state.fulltext.lock().map_err(|_| err_500("fulltext lock poisoned"))?;
-        match ft_guard.as_ref() {
-            Some(ft) => ft.search(&body.query, top_k).unwrap_or_default(),
-            None => vec![],
-        }
+    let reranker = state.reranker.lock().map_err(|_| err_500("reranker lock"))?.clone();
+    let emb = state.embedding.lock().map_err(|_| err_500("emb lock"))?.clone();
+
+    let mut results: Vec<SearchResult> = {
+        let ft_guard = state.fulltext.lock().map_err(|_| err_500("ft lock"))?;
+        let vec_guard = state.vectors.lock().map_err(|_| err_500("vec lock"))?;
+        let vault_guard = state.vault.lock().map_err(|_| err_500("vault lock"))?;
+
+        let ctx = vault_core::search::SearchContext {
+            fulltext: ft_guard.as_ref(),
+            vectors: vec_guard.as_ref(),
+            embedding: emb,
+            reranker,
+            store: vault_guard.store(),
+            dek: &dek,
+        };
+        vault_core::search::search_with_context(&ctx, &body.query, &search_params)
+            .map_err(|e| err_500(&e.to_string()))?
     };
-
-    // Vector search (if embedding available)
-    let (vec_results, query_vec) = embed_query(&state, &body.query).await;
-
-    // RRF fusion
-    let fused = rrf_fuse(&vec_results, &ft_results, 0.6, 0.4, top_k);
-
-    // Fetch and decrypt items
-    let vault = state.vault.lock().map_err(|_| err_500("vault lock poisoned"))?;
-    let mut results: Vec<SearchResult> = Vec::new();
-    for (item_id, score) in &fused {
-        if let Ok(Some(item)) = vault.store().get_item(&dek, item_id) {
-            results.push(SearchResult {
-                item_id: item.id,
-                score: *score,
-                title: item.title,
-                content: item.content,
-                source_type: item.source_type,
-                inject_content: None,
-            });
-        }
-    }
-
-    // Rerank when top_k is small enough and query vector is available
-    if top_k <= RERANK_TOP_K_THRESHOLD {
-        if let Some(qvec) = query_vec {
-            let vec_guard = state.vectors.lock().map_err(|_| err_500("vectors lock poisoned"))?;
-            if let Some(vecs) = vec_guard.as_ref() {
-                rerank(&qvec, &mut results, vecs);
-            }
-        }
-    }
 
     // Apply injection budget
     allocate_budget(&mut results, budget);
@@ -238,6 +166,8 @@ pub struct RelevantRequest {
     pub query: String,
     pub top_k: Option<usize>,
     pub injection_budget: Option<usize>,
+    pub initial_k: Option<usize>,
+    pub intermediate_k: Option<usize>,
     #[allow(dead_code)]
     pub source_types: Option<Vec<String>>,
 }

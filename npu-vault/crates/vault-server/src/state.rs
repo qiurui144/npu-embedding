@@ -34,6 +34,7 @@ pub struct AppState {
     pub fulltext: Mutex<Option<FulltextIndex>>,
     pub vectors: Mutex<Option<VectorIndex>>,
     pub embedding: Mutex<Option<Arc<dyn EmbeddingProvider>>>,
+    pub reranker: Mutex<Option<Arc<dyn vault_core::infer::RerankProvider>>>,
     pub llm: Mutex<Option<Arc<dyn LlmProvider>>>,
     pub tag_index: Mutex<Option<TagIndex>>,
     pub cluster_snapshot: Mutex<Option<ClusterSnapshot>>,
@@ -52,6 +53,7 @@ impl AppState {
             fulltext: Mutex::new(None),
             vectors: Mutex::new(None),
             embedding: Mutex::new(None),
+            reranker: Mutex::new(None),
             llm: Mutex::new(None),
             tag_index: Mutex::new(None),
             cluster_snapshot: Mutex::new(None),
@@ -93,9 +95,33 @@ impl AppState {
             *guard = VectorIndex::new(1024).ok();
         }
 
-        // Ollama embedding provider — always set it; availability checked lazily at search time.
+        // Try ONNX embedding first; fall back to Ollama if model not available
         if let Ok(mut guard) = self.embedding.lock() {
-            *guard = Some(Arc::new(OllamaProvider::default()));
+            let provider: Arc<dyn EmbeddingProvider> =
+                match vault_core::infer::embedding::OrtEmbeddingProvider::qwen3_embedding_0_6b() {
+                    Ok(p) => {
+                        tracing::info!("Embedding: OrtEmbeddingProvider (Qwen3-Embedding-0.6B)");
+                        Arc::new(p)
+                    }
+                    Err(e) => {
+                        tracing::info!("ONNX embedding unavailable ({e}), falling back to Ollama bge-m3");
+                        Arc::new(OllamaProvider::default())
+                    }
+                };
+            *guard = Some(provider);
+        }
+
+        // Try loading OrtRerankProvider
+        if let Ok(mut guard) = self.reranker.lock() {
+            match vault_core::infer::reranker::OrtRerankProvider::bge_reranker_v2_m3() {
+                Ok(r) => {
+                    tracing::info!("Reranker: OrtRerankProvider (bge-reranker-v2-m3)");
+                    *guard = Some(Arc::new(r));
+                }
+                Err(e) => {
+                    tracing::info!("Reranker unavailable ({e}), will use vector cosine fallback");
+                }
+            }
         }
 
         // LLM auto-detect (may fail if no chat model installed)
@@ -465,6 +491,7 @@ impl AppState {
         *self.fulltext.lock().unwrap() = None;
         *self.vectors.lock().unwrap() = None;
         *self.embedding.lock().unwrap() = None;
+        *self.reranker.lock().unwrap() = None;
         *self.llm.lock().unwrap() = None;
         *self.tag_index.lock().unwrap() = None;
         *self.cluster_snapshot.lock().unwrap() = None;
