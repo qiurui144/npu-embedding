@@ -7,7 +7,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
-const MAX_SEQ_LEN: usize = 512;
+/// bge-reranker-v2-m3 最大支持 8192 tokens；设 2048 作为安全默认值，
+/// 在精度与推理内存之间取得平衡。
+const MAX_SEQ_LEN: usize = 2048;
 
 pub struct OrtRerankProvider {
     session: Mutex<ort::session::Session>,

@@ -7,7 +7,10 @@ use std::path::Path;
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
-const MAX_SEQ_LEN: usize = 512;
+/// Qwen3-Embedding-0.6B 最大支持 32768 tokens；设 2048 作为安全默认值，
+/// 覆盖绝大多数文档而不超出 ORT 推理内存预算。
+/// 如有需要可通过 NPU_VAULT_EMBED_MAX_SEQ_LEN 环境变量覆盖。
+const MAX_SEQ_LEN: usize = 2048;
 
 pub struct OrtEmbeddingProvider {
     session: Mutex<ort::session::Session>,
