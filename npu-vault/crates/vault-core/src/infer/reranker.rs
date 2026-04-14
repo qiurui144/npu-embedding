@@ -72,12 +72,10 @@ impl OrtRerankProvider {
             })
             .map_err(|e| VaultError::Crypto(format!("ort run: {e}")))?;
 
-        // 4. 取 logits 输出，shape: [1, 1]
-        let output_key = outputs.keys().next()
-            .ok_or_else(|| VaultError::Crypto("ort no outputs".into()))?
-            .to_string();
-        let output_value = outputs.remove(&*output_key)
-            .ok_or_else(|| VaultError::Crypto("ort output missing".into()))?;
+        // 4. 取 logits 输出（bge-reranker-v2-m3 标准输出名为 "logits"），shape: [1, 1]
+        // 不使用 keys().next() 以避免 HashMap 迭代顺序不确定问题
+        let output_value = outputs.remove("logits")
+            .ok_or_else(|| VaultError::Crypto("ort output 'logits' missing".into()))?;
 
         let (_shape, flat) = output_value
             .try_extract_tensor::<f32>()

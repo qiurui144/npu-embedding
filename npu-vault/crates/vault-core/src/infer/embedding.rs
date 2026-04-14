@@ -68,12 +68,10 @@ impl OrtEmbeddingProvider {
             })
             .map_err(|e| VaultError::Crypto(format!("ort run: {e}")))?;
 
-        // 4. 取第一个输出（last_hidden_state），shape: [1, seq_len, hidden_dim]
-        let output_key = outputs.keys().next()
-            .ok_or_else(|| VaultError::Crypto("ort no outputs".into()))?
-            .to_string();
-        let output_value = outputs.remove(&*output_key)
-            .ok_or_else(|| VaultError::Crypto("ort output missing".into()))?;
+        // 4. 取 last_hidden_state 输出（Qwen3-Embedding 标准输出名），shape: [1, seq_len, hidden_dim]
+        // 不使用 keys().next() 以避免 HashMap 迭代顺序不确定问题
+        let output_value = outputs.remove("last_hidden_state")
+            .ok_or_else(|| VaultError::Crypto("ort output 'last_hidden_state' missing".into()))?;
 
         let (shape, flat) = output_value
             .try_extract_tensor::<f32>()

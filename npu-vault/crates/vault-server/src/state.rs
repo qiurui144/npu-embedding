@@ -43,6 +43,8 @@ pub struct AppState {
     pub require_auth: bool,
     /// 防止重复启动 QueueWorker 后台线程
     pub queue_worker_running: AtomicBool,
+    /// 防止并发 unlock 重复初始化搜索引擎（重建索引会清空内存向量）
+    pub engines_initialized: AtomicBool,
     pub search_cache: Mutex<LruCache<u64, CachedSearch>>,
 }
 
@@ -61,6 +63,7 @@ impl AppState {
             classifier: Mutex::new(None),
             require_auth,
             queue_worker_running: AtomicBool::new(false),
+            engines_initialized: AtomicBool::new(false),
             search_cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(SEARCH_CACHE_CAPACITY).unwrap()
             )),
@@ -68,7 +71,14 @@ impl AppState {
     }
 
     /// 初始化搜索引擎 + 分类引擎 (unlock 后调用)
+    /// 使用 compare_exchange 保证幂等：并发 unlock 只有第一个线程真正执行初始化。
     pub fn init_search_engines(&self) {
+        if self.engines_initialized
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return; // 已初始化，跳过
+        }
         // Fulltext index (persistent on disk)
         {
             let tantivy_dir = vault_core::platform::data_dir().join("tantivy");
