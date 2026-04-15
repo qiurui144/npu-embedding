@@ -76,6 +76,8 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/clusters/rebuild", post(routes::clusters::rebuild))
         .route("/api/v1/clusters/{id}", get(routes::clusters::detail))
         .route("/api/v1/plugins", get(routes::plugins::list))
+        .route("/api/v1/patent/search", post(routes::patent::search))
+        .route("/api/v1/patent/databases", get(routes::patent::databases))
         .route("/api/v1/profile/export", get(routes::profile::export))
         .route("/api/v1/profile/import", post(routes::profile::import))
         .route("/api/v1/behavior/click", post(routes::behavior::log_click))

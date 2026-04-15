@@ -455,6 +455,19 @@ impl Store {
         Ok(count as usize)
     }
 
+    /// 按 URL 查找未删除 item，用于入库前去重（例如专利记录重复检查）。
+    pub fn find_item_by_url(&self, url: &str) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM items WHERE url = ?1 AND is_deleted = 0 LIMIT 1",
+        )?;
+        let result = stmt.query_row(params![url], |row| row.get::<_, String>(0));
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     // --- bound_dirs ---
 
     /// 绑定监控目录，返回 dir_id
@@ -1269,6 +1282,35 @@ mod tests {
         assert!(store.delete_item(&id).unwrap());
         assert_eq!(store.item_count().unwrap(), 0);
         assert!(store.get_item(&dek, &id).unwrap().is_none());
+    }
+
+    #[test]
+    fn find_item_by_url_returns_id_when_present() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let url = "https://patents.google.com/patent/US10000000/en";
+        let id = store
+            .insert_item(&dek, "Patent Title", "abstract text", Some(url), "patent", None, None)
+            .unwrap();
+        assert_eq!(store.find_item_by_url(url).unwrap(), Some(id));
+    }
+
+    #[test]
+    fn find_item_by_url_returns_none_when_absent() {
+        let store = Store::open_memory().unwrap();
+        assert!(store.find_item_by_url("https://missing.example.com").unwrap().is_none());
+    }
+
+    #[test]
+    fn find_item_by_url_returns_none_after_soft_delete() {
+        let store = Store::open_memory().unwrap();
+        let dek = test_dek();
+        let url = "https://patents.google.com/patent/US99999999/en";
+        let id = store
+            .insert_item(&dek, "Patent", "content", Some(url), "patent", None, None)
+            .unwrap();
+        store.delete_item(&id).unwrap();
+        assert!(store.find_item_by_url(url).unwrap().is_none(), "soft-deleted item must not be found by URL");
     }
 
     #[test]

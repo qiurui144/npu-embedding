@@ -48,6 +48,7 @@ impl Plugin {
 const TECH_PLUGIN_YAML: &str = include_str!("../assets/plugins/tech.yaml");
 const LAW_PLUGIN_YAML: &str = include_str!("../assets/plugins/law.yaml");
 const PRESALES_PLUGIN_YAML: &str = include_str!("../assets/plugins/presales.yaml");
+const PATENT_PLUGIN_YAML: &str = include_str!("../assets/plugins/patent.yaml");
 
 pub struct Taxonomy {
     pub core: Vec<Dimension>,
@@ -97,6 +98,7 @@ impl Taxonomy {
             Plugin::from_yaml(TECH_PLUGIN_YAML)?,
             Plugin::from_yaml(LAW_PLUGIN_YAML)?,
             Plugin::from_yaml(PRESALES_PLUGIN_YAML)?,
+            Plugin::from_yaml(PATENT_PLUGIN_YAML)?,
         ])
     }
 
@@ -105,6 +107,7 @@ impl Taxonomy {
             "tech" => Plugin::from_yaml(TECH_PLUGIN_YAML),
             "law" => Plugin::from_yaml(LAW_PLUGIN_YAML),
             "presales" => Plugin::from_yaml(PRESALES_PLUGIN_YAML),
+            "patent" => Plugin::from_yaml(PATENT_PLUGIN_YAML),
             _ => Err(VaultError::Taxonomy(format!("unknown builtin plugin: {id}"))),
         }
     }
@@ -370,11 +373,23 @@ mod tests {
     #[test]
     fn load_builtin_plugins_works() {
         let plugins = Taxonomy::load_builtin_plugins().unwrap();
-        assert_eq!(plugins.len(), 3);
+        assert_eq!(plugins.len(), 4);
         let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
         assert!(ids.contains(&"tech"));
         assert!(ids.contains(&"law"));
         assert!(ids.contains(&"presales"));
+        assert!(ids.contains(&"patent"));
+    }
+
+    #[test]
+    fn patent_plugin_dimensions() {
+        let patent = Taxonomy::load_builtin_plugin("patent").unwrap();
+        assert_eq!(patent.dimensions.len(), 4);
+        let ipc = patent.dimensions.iter().find(|d| d.name == "ipc_class").unwrap();
+        assert!(matches!(ipc.cardinality, Cardinality::Multi { max: 5 }));
+        let stage = patent.dimensions.iter().find(|d| d.name == "filing_stage").unwrap();
+        assert!(matches!(stage.value_type, ValueType::Closed));
+        assert!(stage.suggested_values.contains(&"技术交底书".to_string()));
     }
 
     #[test]

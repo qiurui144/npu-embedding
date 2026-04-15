@@ -7,6 +7,7 @@ pub mod clusters;
 pub mod index;
 pub mod ingest;
 pub mod items;
+pub mod patent;
 pub mod plugins;
 pub mod profile;
 pub mod remote;

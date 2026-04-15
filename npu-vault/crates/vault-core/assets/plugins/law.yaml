@@ -37,6 +37,11 @@ dimensions:
       - 案情分析
       - 备忘录
       - 政策解读
+      - 权利要求书
+      - 专利说明书
+      - 专利摘要
+      - 意见陈述书
+      - OA答复
 
   - name: jurisdiction
     label: 管辖区
