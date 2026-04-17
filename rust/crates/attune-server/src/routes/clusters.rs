@@ -107,7 +107,9 @@ pub async fn rebuild(
     }
 
     // 3. 跑聚类（heavy, spawn_blocking 避免阻塞 runtime）
-    let clusterer = Clusterer::new(llm).with_min_items(3);
+    // HDBSCAN 默认 min_cluster_size=5，给向量少于 10 时会 panic out-of-bounds；
+    // 安全起见 min_items=10，少于此直接返回空 snapshot。
+    let clusterer = Clusterer::new(llm).with_min_items(10);
     let snapshot = tokio::task::spawn_blocking(move || clusterer.rebuild(inputs))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("join: {e}")}))))?
