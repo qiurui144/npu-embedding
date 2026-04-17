@@ -580,7 +580,7 @@ cargo ndk -t aarch64-linux-android build --release
 A: 需要 Ollama 服务在 `http://localhost:11434` 运行，并已 `ollama pull bge-m3`。否则向量搜索降级，只有全文搜索。刚 ingest 的数据需要等 Queue Worker 处理完才会出现在搜索结果中。
 
 **Q: 为何 vault.db 里能看到标题明文？**
-A: 设计决策。标题明文允许 LOCKED 状态展示条目列表（类似 1Password）。内容和 tags 始终加密。参考 README 的字段级加密策略表。
+A: 设计决策。标题明文允许 LOCKED 状态展示条目列表（无需解锁即可浏览条目名称）。内容和 tags 始终加密。参考 README 的字段级加密策略表。
 
 **Q: 改密码会丢数据吗？**
 A: 不会。改密码只重新加密 3 个 DEK（共 96 字节），业务数据（用 DEK 加密）不动。
