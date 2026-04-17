@@ -45,18 +45,86 @@ pub async fn detail(
     }
 }
 
-/// POST /api/v1/clusters/rebuild — 手动触发聚类（占位实现）
+/// POST /api/v1/clusters/rebuild — 手动触发聚类
+///
+/// 流程：
+///   1. 枚举所有未删除 item
+///   2. 从 vector index 取每个 item 的均值向量（未 embed 完成的跳过）
+///   3. HDBSCAN 聚类（需要 >= 20 个有向量的 item，由 Clusterer::min_items 控制）
+///   4. LLM 为每个簇生成 name + summary
+///   5. 写入 state.cluster_snapshot
 pub async fn rebuild(
     State(state): State<SharedState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let vault = state.vault.lock()
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "vault lock poisoned"}))))?;
-    let _ = vault.dek_db().map_err(|e| {
-        (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
-    })?;
+    use attune_core::clusterer::{Clusterer, ClusterInput};
+
+    // 取 LLM（聚类命名依赖 LLM）
+    let llm = state.llm.lock()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "llm lock"}))))?
+        .as_ref().cloned();
+    let llm = match llm {
+        Some(l) => l,
+        None => return Err((StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+            "error": "LLM 不可用，无法为聚类命名",
+            "hint": "请确保 Ollama 已安装并拉取 chat 模型"
+        })))),
+    };
+
+    // 1. 取所有 item IDs
+    let (ids, dek) = {
+        let vault = state.vault.lock()
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "vault lock"}))))?;
+        let dek = vault.dek_db().map_err(|e| {
+            (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": e.to_string()})))
+        })?;
+        let ids = vault.store().list_all_item_ids()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        (ids, dek)
+    };
+
+    // 2. 构建 ClusterInput：逐 item 取均值向量
+    let mut inputs: Vec<ClusterInput> = Vec::with_capacity(ids.len());
+    let mut missing_vec = 0usize;
+    {
+        let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
+        let vecs = state.vectors.lock().unwrap_or_else(|e| e.into_inner());
+        let vecs_ref = vecs.as_ref();
+        for id in &ids {
+            let embedding = match vecs_ref.and_then(|v| v.get_vector(id)) {
+                Some(v) => v,
+                None => { missing_vec += 1; continue; }
+            };
+            if let Ok(Some(item)) = vault.store().get_item(&dek, id) {
+                let snippet: String = item.content.chars().take(200).collect();
+                inputs.push(ClusterInput {
+                    item_id: item.id,
+                    title: item.title,
+                    content_snippet: snippet,
+                    embedding,
+                });
+            }
+        }
+    }
+
+    // 3. 跑聚类（heavy, spawn_blocking 避免阻塞 runtime）
+    let clusterer = Clusterer::new(llm).with_min_items(3);
+    let snapshot = tokio::task::spawn_blocking(move || clusterer.rebuild(inputs))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("join: {e}")}))))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+
+    let cluster_count = snapshot.clusters.len();
+    let noise_count = snapshot.noise_item_ids.len();
+
+    // 4. 写入 state
+    *state.cluster_snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
 
     Ok(Json(serde_json::json!({
         "status": "ok",
-        "note": "cluster rebuild is a heavy operation; full implementation pending in next phase"
+        "total_items": ids.len(),
+        "items_with_vectors": ids.len() - missing_vec,
+        "missing_vectors": missing_vec,
+        "clusters": cluster_count,
+        "noise_items": noise_count,
     })))
 }

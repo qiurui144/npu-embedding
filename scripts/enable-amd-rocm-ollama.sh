@@ -77,6 +77,11 @@ sudo mkdir -p "$(dirname "$DROPIN")"
 sudo tee "$DROPIN" > /dev/null <<EOF
 [Service]
 Environment="HSA_OVERRIDE_GFX_VERSION=$OVERRIDE"
+# 提高并行度：attune queue worker batch=32，配合 NUM_PARALLEL=4
+# 让 Ollama 能同时处理 4 个请求，充分利用 GPU（APU 共享内存够大）
+Environment="OLLAMA_NUM_PARALLEL=4"
+# 默认 5m 关会让 qwen2.5:3b 反复冷启动。长驻 VRAM 消除 60s 冷启动
+Environment="OLLAMA_KEEP_ALIVE=24h"
 # attune: 该 drop-in 由 scripts/enable-amd-rocm-ollama.sh 生成
 # 撤销：./scripts/enable-amd-rocm-ollama.sh --revert
 EOF

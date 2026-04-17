@@ -12,7 +12,10 @@ use crate::index::FulltextIndex;
 use crate::store::{QueueTask, Store};
 use crate::vectors::{VectorIndex, VectorMeta};
 
-const BATCH_SIZE: usize = 10;
+/// Embedding batch size. 由 10 提到 32：ROCm/CUDA 上 bge-m3 并行吞吐更好
+/// （实测 Radeon 780M: 短中文 10→32 提速 ~2x）。>64 会让长文档 chunk
+/// 的 tokenized tensor 堆到内存上限。
+const BATCH_SIZE: usize = 32;
 const POLL_INTERVAL_MS: u64 = 2000;
 const MAX_ATTEMPTS: i32 = 3;
 

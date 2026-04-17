@@ -474,7 +474,7 @@ impl AppState {
 
         std::thread::spawn(move || {
             tracing::info!("Queue worker started");
-            const BATCH_SIZE: usize = 10;
+            const BATCH_SIZE: usize = 32;  // 与 attune-core/src/queue.rs 保持一致
             const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
             const MAX_ATTEMPTS: i32 = 3;
 

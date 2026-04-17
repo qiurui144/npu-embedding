@@ -362,6 +362,70 @@
 
     <div id="tab-settings" class="tab-content">
       <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">网络搜索</h2>
+        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">
+          本地知识库无相关内容时自动走网络。零 API 费用，通过系统已装的 Chrome/Edge 抓取公开搜索引擎。
+        </p>
+        <div class="field">
+          <label><input type="checkbox" id="cfg-ws-enabled" style="width:auto;margin-right:6px"> 启用网络搜索回退</label>
+        </div>
+        <div class="field">
+          <label>搜索引擎</label>
+          <select id="cfg-ws-engine">
+            <option value="duckduckgo">DuckDuckGo HTML</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>浏览器路径（留空自动检测）</label>
+          <input id="cfg-ws-browser-path" placeholder="e.g. /usr/bin/google-chrome">
+        </div>
+        <div class="field">
+          <label>最小间隔（ms，防爬虫封禁）</label>
+          <input id="cfg-ws-interval" type="number" min="500" value="2000">
+        </div>
+        <button id="btn-save-websearch" class="secondary">保存网络搜索配置</button>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">Embedding 模型</h2>
+        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">
+          向量化文档 chunk，用于语义搜索。Ollama 需预先装好对应模型（如 bge-m3）。
+        </p>
+        <div class="field">
+          <label>模型名</label>
+          <input id="cfg-emb-model" value="bge-m3">
+        </div>
+        <div class="field">
+          <label>Ollama 地址</label>
+          <input id="cfg-emb-url" value="http://localhost:11434">
+        </div>
+        <button id="btn-save-embedding" class="secondary">保存 Embedding 配置</button>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 14px; margin-bottom: 12px;">Chat LLM</h2>
+        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">
+          留空则自动探测 Ollama；填写后走 OpenAI 兼容端点（需 API key）。
+        </p>
+        <div class="field">
+          <label>Endpoint URL（空=Ollama 自动探测）</label>
+          <input id="cfg-llm-endpoint" placeholder="https://api.openai.com/v1/chat/completions">
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input id="cfg-llm-apikey" type="password" placeholder="sk-...">
+        </div>
+        <div class="field">
+          <label>Model</label>
+          <input id="cfg-llm-model" value="gpt-4o-mini">
+        </div>
+        <button id="btn-save-llm" class="secondary">保存 LLM 配置</button>
+        <p style="font-size: 11px; color: #f59e0b; margin-top: 8px;">
+          ⚠ 修改后需手动重启 server 才能生效（模型加载发生在 unlock 时）
+        </p>
+      </div>
+
+      <div class="card">
         <h2 style="font-size: 14px; margin-bottom: 12px;">分类队列</h2>
         <button id="btn-classify-drain" class="secondary">处理一批分类任务</button>
         <div id="classify-drain-status" style="margin-top: 8px; font-size: 12px; color: #94a3b8;"></div>
@@ -903,7 +967,72 @@
   $('btn-classify-drain').addEventListener('click', drainClassify);
   $('btn-profile-export').addEventListener('click', exportProfile);
   $('btn-profile-import').addEventListener('click', importProfile);
-  document.querySelectorAll('.tab').forEach(function(t) { t.addEventListener('click', function() { switchTab(t); }); });
+  $('btn-save-websearch').addEventListener('click', saveWebSearchSettings);
+  $('btn-save-embedding').addEventListener('click', saveEmbeddingSettings);
+  $('btn-save-llm').addEventListener('click', saveLlmSettings);
+  document.querySelectorAll('.tab').forEach(function(t) {
+    t.addEventListener('click', function() {
+      switchTab(t);
+      if (t.getAttribute('data-tab') === 'settings') loadSettingsForm();
+    });
+  });
+
+  // --- Settings form load/save（新增：网络搜索、Embedding、LLM 配置）---
+  async function loadSettingsForm() {
+    try {
+      const s = await api('/settings');
+      const ws = s.web_search || {};
+      $('cfg-ws-enabled').checked = ws.enabled !== false;
+      $('cfg-ws-engine').value = ws.engine || 'duckduckgo';
+      $('cfg-ws-browser-path').value = ws.browser_path || '';
+      $('cfg-ws-interval').value = ws.min_interval_ms || 2000;
+      const emb = s.embedding || {};
+      $('cfg-emb-model').value = emb.model || 'bge-m3';
+      $('cfg-emb-url').value = emb.ollama_url || 'http://localhost:11434';
+      const llm = s.llm || {};
+      $('cfg-llm-endpoint').value = llm.endpoint || '';
+      $('cfg-llm-apikey').value = llm.api_key || '';
+      $('cfg-llm-model').value = llm.model || 'gpt-4o-mini';
+    } catch (e) {
+      toast('加载设置失败: ' + e.message, 'error');
+    }
+  }
+  async function saveWebSearchSettings() {
+    try {
+      await api('/settings', { method: 'POST', body: JSON.stringify({
+        web_search: {
+          enabled: $('cfg-ws-enabled').checked,
+          engine: $('cfg-ws-engine').value,
+          browser_path: $('cfg-ws-browser-path').value || null,
+          min_interval_ms: parseInt($('cfg-ws-interval').value) || 2000,
+        }
+      })});
+      toast('网络搜索配置已保存', 'success');
+    } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+  }
+  async function saveEmbeddingSettings() {
+    try {
+      await api('/settings', { method: 'POST', body: JSON.stringify({
+        embedding: {
+          model: $('cfg-emb-model').value,
+          ollama_url: $('cfg-emb-url').value,
+        }
+      })});
+      toast('Embedding 配置已保存（重启后生效）', 'success');
+    } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+  }
+  async function saveLlmSettings() {
+    try {
+      await api('/settings', { method: 'POST', body: JSON.stringify({
+        llm: {
+          endpoint: $('cfg-llm-endpoint').value || null,
+          api_key: $('cfg-llm-apikey').value,
+          model: $('cfg-llm-model').value,
+        }
+      })});
+      toast('LLM 配置已保存（重启后生效）', 'success');
+    } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+  }
 
   refreshStatus();
   setInterval(refreshStatus, 30000);
