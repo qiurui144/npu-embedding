@@ -113,9 +113,32 @@ impl AppState {
             }
         }
 
-        // Vector index (1024 dims for bge-m3)
+        // Vector index (1024 dims for bge-m3)。
+        //
+        // 持久化策略：
+        //   优先从 ~/.local/share/attune/vectors.encbin 加密加载；不存在或损坏
+        //   降级为空 HNSW。写入在 start_queue_worker 批次结束时 flush（每 20 次 or
+        //   每 10 分钟取近者），clear_search_engines 锁定前再 flush 一次。
         if let Ok(mut guard) = self.vectors.lock() {
-            *guard = VectorIndex::new(1024).ok();
+            let vectors_path = attune_core::platform::data_dir().join("vectors.encbin");
+            let dek_opt = self.vault.lock().unwrap_or_else(|e| e.into_inner())
+                .dek_db().ok();
+            *guard = match dek_opt {
+                Some(dek) if vectors_path.exists() => {
+                    match VectorIndex::load_encrypted(&dek, &vectors_path, 1024) {
+                        Ok(vi) => {
+                            tracing::info!("Vector index loaded from {} ({} entries)",
+                                vectors_path.display(), vi.len());
+                            Some(vi)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Vector index load failed ({e}); starting empty");
+                            VectorIndex::new(1024).ok()
+                        }
+                    }
+                }
+                _ => VectorIndex::new(1024).ok(),
+            };
         }
 
         // Try ONNX embedding first; fall back to Ollama if model not available
@@ -478,6 +501,10 @@ impl AppState {
             const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
             const MAX_ATTEMPTS: i32 = 3;
 
+            // 持久化节流：累积 N 个向量或 T 时间后 flush 一次
+            let mut flush_counter: usize = 0;
+            let mut last_flush = std::time::Instant::now();
+
             loop {
                 // 检查 vault 是否仍处于 unlocked 状态
                 let vault_unlocked = {
@@ -594,11 +621,44 @@ impl AppState {
                     }
                 }
 
+                // 定期把 vector index flush 到加密磁盘文件
+                // 条件：每累计 FLUSH_BATCH_THRESHOLD 个新向量 or 距上次 flush 超过 FLUSH_INTERVAL
+                const FLUSH_BATCH_THRESHOLD: usize = 100;
+                const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+                flush_counter += done_ids.len();
+                let should_flush = flush_counter >= FLUSH_BATCH_THRESHOLD
+                    || last_flush.elapsed() >= FLUSH_INTERVAL;
+                if should_flush && flush_counter > 0 {
+                    let dek_opt = state.vault.lock().unwrap_or_else(|e| e.into_inner())
+                        .dek_db().ok();
+                    let vecs = state.vectors.lock().unwrap_or_else(|e| e.into_inner());
+                    if let (Some(dek), Some(vi)) = (dek_opt, vecs.as_ref()) {
+                        let p = attune_core::platform::data_dir().join("vectors.encbin");
+                        if let Err(e) = vi.save_encrypted(&dek, &p) {
+                            tracing::warn!("Vector flush failed: {e}");
+                        } else {
+                            tracing::info!("Vector index flushed ({} entries after +{} new)",
+                                vi.len(), flush_counter);
+                        }
+                    }
+                    flush_counter = 0;
+                    last_flush = std::time::Instant::now();
+                }
+
                 tracing::debug!("Queue worker processed {} embed tasks", embed_tasks.len());
             }
 
-            // 退出时重置标志
+            // 退出时重置标志 + 最后一次 flush
             state.queue_worker_running.store(false, Ordering::SeqCst);
+            if flush_counter > 0 {
+                let dek_opt = state.vault.lock().unwrap_or_else(|e| e.into_inner())
+                    .dek_db().ok();
+                let vecs = state.vectors.lock().unwrap_or_else(|e| e.into_inner());
+                if let (Some(dek), Some(vi)) = (dek_opt, vecs.as_ref()) {
+                    let p = attune_core::platform::data_dir().join("vectors.encbin");
+                    let _ = vi.save_encrypted(&dek, &p);
+                }
+            }
             tracing::info!("Queue worker stopped (vault locked or engines cleared)");
         });
     }
@@ -656,7 +716,24 @@ impl AppState {
     }
 
     /// 清除搜索引擎 + 分类引擎 (lock 前调用)
+    ///
+    /// 顺序：先持久化 vectors（lock 前必须），再清内存。
     pub fn clear_search_engines(&self) {
+        // Persist vectors before clearing（忽略失败：最坏情况重启需重新 embed）
+        {
+            let dek_opt = self.vault.lock().unwrap_or_else(|e| e.into_inner())
+                .dek_db().ok();
+            let vecs = self.vectors.lock().unwrap_or_else(|e| e.into_inner());
+            if let (Some(dek), Some(vi)) = (dek_opt, vecs.as_ref()) {
+                let vectors_path = attune_core::platform::data_dir().join("vectors.encbin");
+                if let Err(e) = vi.save_encrypted(&dek, &vectors_path) {
+                    tracing::warn!("Vector index flush on lock failed (non-fatal): {e}");
+                } else {
+                    tracing::info!("Vector index persisted to {} ({} entries)",
+                        vectors_path.display(), vi.len());
+                }
+            }
+        }
         *self.fulltext.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.vectors.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.embedding.lock().unwrap_or_else(|e| e.into_inner()) = None;
