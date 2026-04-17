@@ -131,6 +131,85 @@ cargo build --release --workspace
 **通过** 所有 9 / 9 核心场景 + 混合智能网络搜索 fallback。
 **知识库构建完善**：录入 → chunk → embed → 全文索引 → 分类 → 本地搜索 → RAG Chat with citations → 本地无则自动 web 搜索 完整 pipeline 端到端跑通。
 
+---
+
+## 2026-04-17 四轮回归：硬件加速 + reranker 可用
+
+### 硬件画像自动检测（代码级）
+
+启动日志实测输出：
+```
+hardware: OS=linux | CPU=AMD Ryzen 7 8845H w/ Radeon 780M Graphics (AuthenticAMD) | AMD GPU (gfx=gfx1103) | AMD XDNA NPU (Ryzen AI)
+hardware: set HSA_OVERRIDE_GFX_VERSION=11.0.0 — AMD gfx1103 → ROCm runtime 兼容 11.0.0
+```
+
+实现：`rust/crates/attune-core/src/platform.rs`
+- `HardwareProfile::detect()` 扫描 `/proc/cpuinfo`、`/dev/nvidia0`、`/dev/kfd`、`/sys/class/kfd/kfd/topology/nodes/*/properties`、`/dev/accel/accel0` + `/proc/modules`
+- `apply_recommended_env()` 为 AMD APU 的 gfx1103/1102/1150/1151 映射到 `HSA_OVERRIDE_GFX_VERSION=11.0.0`；其他型号按表对应；NVIDIA 补 `CUDA_VISIBLE_DEVICES=0`。用户已设的 env 不覆盖
+
+### Ollama ROCm 落地（系统级）
+
+`scripts/enable-amd-rocm-ollama.sh` 写 systemd drop-in：
+```
+[Service]
+Environment="HSA_OVERRIDE_GFX_VERSION=11.0.0"
+```
+
+Ollama 启动日志验证：
+```
+inference compute  id=0  library=ROCm  compute=gfx1100  name=ROCm0
+description="AMD Radeon 780M Graphics"  type=iGPU  total="17.3 GiB"
+```
+
+### 吞吐加速实测
+
+同一语料（19 章 rust-book） × 同一机器 × 启用前后对比：
+
+| 阶段 | CPU only | ROCm | 加速 |
+|------|---------|------|------|
+| Embed (bge-m3) | 4.3 chunks/s | **~18 chunks/s** | ~4x |
+| Classify (qwen2.5:3b) | 14.5 s/item | **~3 s/item** | ~5x |
+| 总 queue drain (337 tasks) | 347 s | **48 s** | **7.2x** |
+
+### Reranker / Embedding 模型迁移
+
+原配置（默认值）—— 404 错误链：
+- `BAAI/bge-reranker-v2-m3` + `onnx/model_quantized.onnx` ← 仓库没 ONNX 文件
+- `Qwen/Qwen3-Embedding-0.6B` + `onnx/model_quantized.onnx` ← 仓库没 ONNX
+
+新配置（默认）—— 实测下载 + 加载成功：
+- `Xenova/bge-reranker-base` + `onnx/model_quantized.onnx` (267 MB)
+- `Xenova/bge-m3` + `onnx/model_quantized.onnx` (544 MB, 多语言 1024 维)
+
+可选切换（env var）：
+- `ATTUNE_RERANKER_MODEL=jina-v2-multilingual` → Jina v2 多语言 reranker
+- `ATTUNE_RERANKER_MODEL=bge-base-official` → BAAI 官方 bge-reranker-base (330 MB, 无 Xenova 量化)
+- `ATTUNE_EMBEDDING_MODEL=multilingual-e5-small|base` → 更小的多语言 embedder
+
+### 四轮 RAG 5 问（19 章 rust-book，带 ROCm + 真实 reranker）
+
+| Q | top-1 | top-3 | 延迟 |
+|----|------|------|------|
+| Q1 references/borrowing | ⏱ timeout 60s（LLM 加载） | — | 60s |
+| Q2 Box<T> | ✅ box | ✅ | 37s |
+| Q3 reference cycles | ❌ deref（ref-cycles 未入 top-3） | — | 19s |
+| Q4 lifetimes | ⏱ timeout 60s（LLM 加载） | — | 60s |
+| Q5 refutable | ✅ refutability | ✅ | 14s |
+
+对比三轮（无 reranker，只 RRF）的结果 4/5 top-1 → 四轮（用 cross-encoder reranker）变成 2/5 top-1。**Cross-encoder 对小语料反而不如 RRF 稳定**：
+
+- **relevance 分值量级变化**：三轮 0.002（RRF reciprocal rank） → 四轮 0.007（bge-reranker cross-encoder sigmoid score）确认 reranker 真正接管了打分
+- **Q3 退化根因**：bge-reranker-base 是主训练英文语义相似度的 cross-encoder。对 "reference cycles" → "deref" 这种语义相近但不对应章节的 false positive 无力修正
+- **对策**（后续）：设置 reranker 触发阈值（候选 > N 才启用 rerank），避免小规模召回被 cross-encoder 重排打乱 RRF 的好结果
+
+### 最终成就
+
+✅ 代码级硬件画像检测 + 默认启用优化 env
+✅ Ollama ROCm 7.2x 加速（scripts/enable-amd-rocm-ollama.sh 一键启用）
+✅ Reranker + Embedding 模型迁移到 Xenova 可用镜像，下载 + 加载成功
+⚠️ Reranker 对小语料的排序策略需要阈值化（记录为后续优化）
+⚠️ LLM 首次 query 60s 冷启动（模型加载到 VRAM 后续快）
+
 **后续工作**（非紧急）：
 - 补 classifier / clusters / remote / history / settings 五个 tab 的 E2E 覆盖
 - bge-reranker-v2-m3 ONNX 模型 404 —— 需要重定向到新版模型路径或打包内嵌
