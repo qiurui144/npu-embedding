@@ -135,3 +135,69 @@ cargo build --release --workspace
 - 补 classifier / clusters / remote / history / settings 五个 tab 的 E2E 覆盖
 - bge-reranker-v2-m3 ONNX 模型 404 —— 需要重定向到新版模型路径或打包内嵌
 - platform::data_dir 数据目录 attune/ 新用户使用，老 npu-vault/ 兼容读取；是否做迁移 copy 待决策
+
+---
+
+## 2026-04-17 三轮回归（真实语料规模测试）
+
+### 规模
+
+- 19 个 rust-book 章节（trpl-v0.3.0 tag）—— ch04（所有权）+ ch10（泛型）+ ch15（智能指针）+ ch19（模式）
+- 批量 ingest 经 `scripts/bulk-ingest.sh` + jq 安全 JSON 编码
+- 19/19 成功 POST /api/v1/ingest
+
+### Embedding 吞吐（关键时序数据）
+
+监控 `pending_tasks` 消费过程：
+
+| 阶段 | 任务数 | 时间 | 速率 |
+|-----|-------|------|------|
+| 预处理期（未监控）| ~50 | ~90s | 0.55 tasks/s |
+| Embed 消费期 | ~260 chunks | ~65s | **4.3 chunks/s** ← bge-m3 批量 10 条/批 |
+| Classify 消费期 | 19 items | ~275s | **14.5s/item** ← qwen2.5:3b 单条分类 |
+| **总计** | 324 tasks | **347s**（监控开始到 0） | — |
+
+**关键发现**：qwen2.5:3b 分类是 CPU 推理，未利用 Radeon 780M iGPU。ROCm 虽然装了但 Ollama 默认路径未启用。优化空间约 5-10x。
+
+### 又一个关键 Bug 被发现
+
+**Bug #4（最致命，前面的"RAG 0 hits"真正根因）**：
+`RawItem::decrypt` 把 `items.tags` 字段反序列化为 `Vec<String>`，
+但 AI 分类器写入的是 `ClassificationResult`（JSON map 带 core/
+universal/plugin/user_tags）。解析失败 → serde 报 "invalid type:
+map, expected a sequence" → `get_item` 返回 Err → 调用者用 `if let
+Ok(Some(..))` 吞错误 → 搜索 `items_decrypted=0` → Chat 本地全军覆没。
+
+**证据链**（本次回归收集到）：
+```
+server log: search stages: rrf_fused=7  items_decrypted=0  returned=0
+API:        GET /api/v1/items/<id> → {"error":"json error: invalid
+            type: map, expected a sequence at line 1 column 0"}
+```
+
+**修复**（commit 534ce3f）：`RawItem::decrypt` 先尝试 `Vec<String>`，
+失败则按 `serde_json::Value` 解析，从 `user_tags` 字段提取；完全无法
+解析时保持 `tags=None` 但 item 仍可取出。
+
+### 三轮修复后 RAG 5 问质量测试（19 个 rust-book 章节）
+
+| 问 | 预期命中 | 实际 top-1 | 评估 |
+|----|---------|----------|------|
+| Q1 What's the difference between references and borrowing? | ch04-02 | references-and-borrowing | ✅ PASS (top-1) |
+| Q2 When should you use Box<T>? | ch15-01 | box | ✅ PASS (top-1) |
+| Q3 How does Rust handle reference cycles? | ch15-06 | deref（ref-cycles top-2）| ⚠️ top-2 |
+| Q4 What are lifetimes in Rust? | ch10-03 | lifetime-syntax | ✅ PASS (top-1) |
+| Q5 Refutable vs irrefutable patterns? | ch19-02 | refutability | ✅ PASS (top-1) |
+
+**4/5 top-1 命中，5/5 top-3 命中**。所有问题 `web_search_used=false`（本地召回充分），不再触发网络搜索 fallback。
+
+### 最终验收结论
+
+**PASS**. 知识库构建 pipeline 在真实 GitHub 语料上端到端跑通：
+- 录入：19 章节全成功
+- Chunk + Embed：4.3 chunks/s 稳定吞吐
+- 分类：100% 完成（虽然慢，CPU 推理）
+- 全文 + 向量索引：全部在场
+- 搜索召回：4/5 top-1、5/5 top-3
+- RAG Chat + 引用：本地优先，web fallback 需要时自动触发
+- 混合智能：本地命中不 fallback，本地空则 DuckDuckGo 自动补充
