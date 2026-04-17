@@ -85,12 +85,34 @@ pub fn parse_bytes(data: &[u8], filename: &str) -> Result<(String, String)> {
 }
 
 fn parse_pdf_file(path: &Path, stem: &str) -> Result<(String, String)> {
+    // 1. 先尝试 pdf_extract 直接取文字层
     let bytes = std::fs::read(path)?;
     let content = pdf_extract::extract_text_from_mem(&bytes)
         .map_err(|e| VaultError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("PDF extract failed: {e}"),
         )))?;
+
+    // 2. 文字量 < 100 字符（扫描版）→ 尝试 OCR
+    if crate::ocr::needs_ocr(&content) {
+        if let Some(backend) = crate::ocr::detect_ocr_backend() {
+            log::info!("PDF text layer empty ({} chars); falling back to OCR ({})",
+                content.chars().filter(|c| !c.is_whitespace()).count(),
+                backend.lang_arg());
+            match crate::ocr::ocr_pdf(&backend, path) {
+                Ok(ocr_text) if !ocr_text.trim().is_empty() => {
+                    let title = first_line_title(&ocr_text, stem);
+                    return Ok((title, ocr_text));
+                }
+                Ok(_) => log::warn!("OCR returned empty text for {}", path.display()),
+                Err(e) => log::warn!("OCR failed for {}: {}", path.display(), e),
+            }
+        } else {
+            log::debug!("PDF has no text layer but OCR backend not available; \
+                returning thin text. Install tesseract + pdftoppm to enable OCR.");
+        }
+    }
+
     let title = first_line_title(&content, stem);
     Ok((title, content))
 }

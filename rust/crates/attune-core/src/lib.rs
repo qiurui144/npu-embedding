@@ -8,6 +8,7 @@ pub mod infer;
 pub mod error;
 pub mod index;
 pub mod llm;
+pub mod ocr;
 pub mod parser;
 pub mod platform;
 pub mod queue;
