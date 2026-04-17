@@ -34,15 +34,18 @@ fetch_corpus() {
     return 0
   fi
 
+  # 绕过本地 gitconfig 里的代理配置（127.0.0.1:7890 通常没跑）
+  local GIT="git -c http.https://github.com.proxy= -c https.https://github.com.proxy="
+
   echo "[fetch] $name @ $pin"
   # 大仓（如 technical-books 5.6GB）用 sparse-checkout 只抽关键子目录
   if [ "$name" = "technical-books" ]; then
-    git clone --depth=1 --filter=blob:none --sparse "$url" "$dest"
-    (cd "$dest" && git sparse-checkout set \
+    $GIT clone --depth=1 --filter=blob:none --sparse "$url" "$dest"
+    (cd "$dest" && $GIT sparse-checkout set \
         "Python" "Go" "人工智能&机器学习" "数据库" "算法")
   else
-    git clone --depth=50 "$url" "$dest"
-    (cd "$dest" && git checkout "$pin")
+    $GIT clone --depth=50 "$url" "$dest"
+    (cd "$dest" && $GIT checkout "$pin")
   fi
   echo "[ok]    $name content at $dest/$subdir"
 }

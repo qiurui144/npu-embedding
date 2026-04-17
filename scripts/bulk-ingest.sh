@@ -28,14 +28,12 @@ while IFS= read -r -d '' file; do
   title="${title%.*}"
   title="${title#ch*-*-}"
 
-  # jq 从 stdin 读文件内容（避免 --arg 超过 ARG_MAX，对 >128KB 文件友好）
-  body=$(jq -Rs --arg t "$title" \
-    '{title: $t, content: ., source_type: "file"}' < "$file")
-
-  # --data-binary 保留 JSON body 原始字节（--data 会规范化换行破坏 JSON）
-  if curl -sSf -X POST -H 'Content-Type: application/json' \
-       --data-binary "$body" \
-       "$BASE_URL/api/v1/ingest" > /dev/null 2>&1; then
+  # jq 从 stdin 读文件 → 管道直通 curl --data-binary @-
+  # 避免把 JSON 当 shell 变量（会超过 ARG_MAX，大文件失败）
+  if jq -Rs --arg t "$title" '{title: $t, content: ., source_type: "file"}' < "$file" \
+       | curl -sSf -X POST -H 'Content-Type: application/json' \
+              --data-binary @- \
+              "$BASE_URL/api/v1/ingest" > /dev/null 2>&1; then
     success=$((success + 1))
   else
     failed=$((failed + 1))
