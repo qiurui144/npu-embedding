@@ -14,7 +14,7 @@ target="${1:-all}"
 
 # Corpus definitions: name url pinned_ref subdir
 declare -A CORPORA=(
-  [rust-book]="https://github.com/rust-lang/book.git|1.75.0|src"
+  [rust-book]="https://github.com/rust-lang/book.git|trpl-v0.3.0|src"
   [cs-notes]="https://github.com/CyC2018/CS-Notes.git|c47a2a7|notes"
   [openai-cookbook]="https://github.com/openai/openai-cookbook.git|main|examples"
 )

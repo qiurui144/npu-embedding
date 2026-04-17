@@ -1029,8 +1029,30 @@ impl RawItem {
     fn decrypt(self, dek: &Key32) -> Result<DecryptedItem> {
         let content = String::from_utf8(crypto::decrypt(dek, &self.content)?)
             .map_err(|e| VaultError::Crypto(format!("utf8: {e}")))?;
+        // tags 字段兼容两种历史格式：
+        //   1. 老版：Vec<String>（手工标签）
+        //   2. 新版：ClassificationResult（AI 分类结果，是 JSON map 带 core/universal/plugin/user_tags）
+        // 新版反序列化为 Vec<String> 会 "invalid type: map, expected a sequence"
+        // 导致整条 item 无法 decrypt，进而把 get_item / 搜索全链路阻塞。
+        // 策略：先尝试 Vec<String>；失败则解为 Value 提取 user_tags / 或返回空 Vec。
         let tags: Option<Vec<String>> = match self.tags {
-            Some(ref enc) => Some(serde_json::from_slice(&crypto::decrypt(dek, enc)?)?),
+            Some(ref enc) => {
+                let plain = crypto::decrypt(dek, enc)?;
+                let parsed: Option<Vec<String>> = serde_json::from_slice::<Vec<String>>(&plain)
+                    .ok()
+                    .or_else(|| {
+                        // 新版：ClassificationResult 格式。读取 user_tags（如果有）或降级为空
+                        serde_json::from_slice::<serde_json::Value>(&plain).ok().map(|v| {
+                            v.get("user_tags")
+                                .and_then(|t| t.as_array())
+                                .map(|arr| arr.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect())
+                                .unwrap_or_default()
+                        })
+                    });
+                parsed
+            }
             None => None,
         };
         Ok(DecryptedItem {
