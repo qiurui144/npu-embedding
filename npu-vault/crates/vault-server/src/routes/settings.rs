@@ -78,10 +78,10 @@ fn default_settings() -> serde_json::Value {
             "ollama_url": "http://localhost:11434"
         },
         "web_search": {
-            "enabled": false,
-            "provider": "brave",
-            "api_key": "",
-            "base_url": ""
+            "enabled": true,
+            "engine": "duckduckgo",
+            "browser_path": null,
+            "min_interval_ms": 2000
         }
     })
 }
