@@ -104,7 +104,7 @@ async fn main() {
 
     match (cli.tls_cert.as_ref(), cli.tls_key.as_ref()) {
         (Some(cert), Some(key)) => {
-            tracing::info!("npu-vault-server listening on https://{addr}");
+            tracing::info!("attune-server listening on https://{addr}");
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
                 .await
                 .expect("failed to load TLS cert/key");
@@ -114,7 +114,7 @@ async fn main() {
                 .expect("server error");
         }
         _ => {
-            tracing::info!("npu-vault-server listening on http://{addr}");
+            tracing::info!("attune-server listening on http://{addr}");
             let listener = tokio::net::TcpListener::bind(&addr)
                 .await
                 .expect("bind failed");

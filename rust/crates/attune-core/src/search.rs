@@ -148,6 +148,8 @@ pub fn rerank(
 /// 三阶段搜索：initial_k 粗召回 → intermediate_k RRF 融合 → Rerank → top_k 返回
 ///
 /// 同时被 search 端点和 chat 引擎调用，避免重复逻辑。
+///
+/// 诊断：每阶段的候选数通过 log::info!/debug! 输出，便于排查"有文档但召回 0"的问题。
 pub fn search_with_context(
     ctx: &SearchContext<'_>,
     query: &str,
@@ -181,8 +183,16 @@ pub fn search_with_context(
             _ => (vec![], None),
         };
 
+    log::info!(
+        "search stages: query='{}' fts={} vec={}",
+        query.chars().take(50).collect::<String>(),
+        ft_results.len(),
+        vec_results.len(),
+    );
+
     // 3. RRF 融合 → intermediate_k
     let fused = rrf_fuse(&vec_results, &ft_results, DEFAULT_VECTOR_WEIGHT, DEFAULT_FULLTEXT_WEIGHT, params.intermediate_k);
+    log::info!("search stages: rrf_fused={}", fused.len());
 
     // 4. 获取并解密 items
     let mut results: Vec<SearchResult> = Vec::new();
@@ -198,16 +208,23 @@ pub fn search_with_context(
             });
         }
     }
+    log::info!("search stages: items_decrypted={}", results.len());
 
     // 5. Rerank（有 Reranker 时用 cross-encoder；有 query 向量时用余弦；否则跳过）
     if let Some(reranker) = &ctx.reranker {
         let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
-        if let Ok(scores) = reranker.score(query, &docs) {
-            for (r, s) in results.iter_mut().zip(scores.iter()) {
-                r.score = *s;
+        match reranker.score(query, &docs) {
+            Ok(scores) => {
+                for (r, s) in results.iter_mut().zip(scores.iter()) {
+                    r.score = *s;
+                }
+                results.sort_by(|a, b| b.score.partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal));
             }
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal));
+            Err(e) => {
+                // Cross-encoder 偶发失败不能让结果归零 — 保留 RRF 排序
+                log::warn!("reranker failed, keeping RRF order: {e}");
+            }
         }
     } else if results.len() <= RERANK_TOP_K_THRESHOLD {
         if let Some(qvec) = &query_vec {
@@ -217,8 +234,10 @@ pub fn search_with_context(
         }
     }
 
-    // 6. 截取 top_k
-    results.truncate(params.top_k);
+    // 6. 截取 top_k（保护：如果 top_k=0，别截成空）
+    let final_k = params.top_k.max(1);
+    results.truncate(final_k);
+    log::info!("search stages: returned={}", results.len());
     Ok(results)
 }
 

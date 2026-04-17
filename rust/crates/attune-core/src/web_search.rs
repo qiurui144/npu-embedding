@@ -50,22 +50,33 @@ pub trait WebSearchProvider: Send + Sync {
 /// }
 /// ```
 ///
-/// - `enabled: false` 或系统无 Chromium 内核浏览器时返回 None
-/// - `browser_path: null` 表示自动检测；显式字符串则使用该路径
+/// - `enabled: false` 时返回 None
+/// - `web_search` 块缺失时，按默认值（自动检测浏览器 + DuckDuckGo）构造
+/// - `browser_path: null` 表示自动检测；显式字符串路径必须存在
+/// - 系统无 Chromium 内核浏览器时返回 None（外层可发出告警）
 pub fn from_settings(
     settings: &serde_json::Value,
 ) -> Option<std::sync::Arc<dyn WebSearchProvider>> {
-    let ws = settings.get("web_search")?;
-    if !ws.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
-        return None;
+    // 允许 web_search 块完全缺失：走默认值路径，避免新建 vault first-run 时核心能力静默失效。
+    let ws_opt = settings.get("web_search");
+
+    // 显式 disabled 才真正禁用
+    if let Some(ws) = ws_opt {
+        if !ws.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
+            return None;
+        }
     }
 
-    let min_interval_ms = ws
-        .get("min_interval_ms")
+    let min_interval_ms = ws_opt
+        .and_then(|ws| ws.get("min_interval_ms"))
         .and_then(|v| v.as_u64())
         .unwrap_or(2000);
 
-    let provider_opt = match ws.get("browser_path").and_then(|v| v.as_str()) {
+    let browser_path_cfg = ws_opt
+        .and_then(|ws| ws.get("browser_path"))
+        .and_then(|v| v.as_str());
+
+    let provider_opt = match browser_path_cfg {
         Some(p) if !p.is_empty() => {
             let path = std::path::PathBuf::from(p);
             if !path.exists() {
@@ -111,9 +122,16 @@ mod tests {
     }
 
     #[test]
-    fn from_settings_no_block_returns_none() {
+    fn from_settings_no_block_uses_defaults() {
+        // 设计决策：web_search 块缺失时按默认值尝试加载（防止 first-run 静默失效）。
+        // 返回值依赖本机是否装 Chromium 内核浏览器：装了则 Some，未装则 None。
         let settings = serde_json::json!({"injection_mode": "auto"});
-        assert!(from_settings(&settings).is_none());
+        let result = from_settings(&settings);
+        let detected = crate::web_search_browser::detect_system_browser();
+        match detected {
+            Some(_) => assert!(result.is_some(), "有 Chrome/Edge 时默认应加载 browser provider"),
+            None => assert!(result.is_none(), "无 Chromium 内核浏览器时返回 None 正常"),
+        }
     }
 
     #[test]

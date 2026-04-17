@@ -207,17 +207,41 @@ impl AppState {
             *self.llm.lock().unwrap_or_else(|e| e.into_inner()) = Some(llm_arc);
         }
 
-        // Web search provider（从 app_settings.web_search 加载）
+        // Web search provider（从 app_settings.web_search 加载；缺省时尝试默认）
         {
-            let ws_provider = {
+            let settings_json = {
                 let vault_guard = self.vault.lock().unwrap_or_else(|e| e.into_inner());
                 vault_guard.store().get_meta("app_settings").ok().flatten()
                     .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-                    .and_then(|settings| attune_core::web_search::from_settings(&settings))
+                    .unwrap_or_else(|| serde_json::json!({}))
             };
-            if let Some(ws) = ws_provider {
-                tracing::info!("Web search: {} provider enabled", ws.provider_name());
-                *self.web_search.lock().unwrap_or_else(|e| e.into_inner()) = Some(ws);
+            let ws_provider = attune_core::web_search::from_settings(&settings_json);
+            match ws_provider {
+                Some(ws) => {
+                    tracing::info!("Web search: {} provider enabled", ws.provider_name());
+                    *self.web_search.lock().unwrap_or_else(|e| e.into_inner()) = Some(ws);
+                }
+                None => {
+                    // 诊断：区分 disabled vs 无浏览器 vs 无效路径
+                    let disabled = settings_json.get("web_search")
+                        .and_then(|w| w.get("enabled"))
+                        .and_then(|v| v.as_bool()) == Some(false);
+                    if disabled {
+                        tracing::info!("Web search: disabled via settings");
+                    } else {
+                        let detected = attune_core::web_search_browser::detect_system_browser();
+                        match detected {
+                            Some(p) => tracing::warn!(
+                                "Web search: 系统检测到浏览器 {} 但 provider 构造失败",
+                                p.display()
+                            ),
+                            None => tracing::warn!(
+                                "Web search: 未检测到 Chrome/Edge，浏览器搜索 fallback 不可用。\
+                                 安装 google-chrome 后重启 server 即可启用。"
+                            ),
+                        }
+                    }
+                }
             }
         }
 

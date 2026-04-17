@@ -1,12 +1,18 @@
 use std::path::PathBuf;
 
+const APP_DIR: &str = "attune";
+const LEGACY_APP_DIR: &str = "npu-vault";
+
 pub fn data_dir() -> PathBuf {
     // 容器/headless 环境中 dirs::data_local_dir() 可能返回 None（无 HOME 变量）；
     // 回退到 $HOME/.local/share 或当前目录，确保不 panic。
+    //
+    // 迁移规则：老目录 npu-vault/ 若存在且新目录 attune/ 不存在，返回老路径（就地复用，
+    // 避免升级丢数据）。新建用户使用 attune/。
     let base = dirs::data_local_dir()
         .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("npu-vault")
+    resolve_app_dir(base)
 }
 
 pub fn config_dir() -> PathBuf {
@@ -14,7 +20,18 @@ pub fn config_dir() -> PathBuf {
     let base = dirs::config_dir()
         .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("npu-vault")
+    resolve_app_dir(base)
+}
+
+/// 迁移兼容：新老目录名都认。老安装返回老路径、新安装用新名字。
+fn resolve_app_dir(base: PathBuf) -> PathBuf {
+    let new_path = base.join(APP_DIR);
+    let legacy_path = base.join(LEGACY_APP_DIR);
+    if !new_path.exists() && legacy_path.exists() {
+        legacy_path
+    } else {
+        new_path
+    }
 }
 
 pub fn db_path() -> PathBuf {
@@ -25,7 +42,7 @@ pub fn device_secret_path() -> PathBuf {
     config_dir().join("device.key")
 }
 
-/// 模型缓存目录：~/.local/share/npu-vault/models/
+/// 模型缓存目录：~/.local/share/attune/models/（老路径 npu-vault/ 自动兼容）
 pub fn models_dir() -> PathBuf {
     data_dir().join("models")
 }
@@ -64,11 +81,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paths_end_with_npu_vault() {
+    fn paths_end_with_attune_or_legacy() {
+        // 迁移期：新安装使用 attune/，老安装保持 npu-vault/。两者都认。
         let dd = data_dir();
         let cd = config_dir();
-        assert!(dd.ends_with("npu-vault"), "data_dir should end with npu-vault: {:?}", dd);
-        assert!(cd.ends_with("npu-vault"), "config_dir should end with npu-vault: {:?}", cd);
+        let ends_ok = |p: &PathBuf| p.ends_with(APP_DIR) || p.ends_with(LEGACY_APP_DIR);
+        assert!(ends_ok(&dd), "data_dir should end with attune or npu-vault: {:?}", dd);
+        assert!(ends_ok(&cd), "config_dir should end with attune or npu-vault: {:?}", cd);
     }
 
     #[test]
