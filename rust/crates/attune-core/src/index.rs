@@ -86,6 +86,30 @@ impl FulltextIndex {
         let tokenizer = tantivy_jieba::JiebaTokenizer {};
         index.tokenizers().register("jieba", tokenizer);
     }
+}
+
+/// 用 index 里注册的 jieba 分词器切中文 query，以空格拼接返回
+///
+/// 用途：绕过 QueryParser 对多字 CJK 的单 token 误判。
+fn tokenize_cjk_query(index: &Index, q: &str) -> String {
+    use tantivy::tokenizer::TokenStream;
+    let mut tokenizer = match index.tokenizer_for_field(
+        index.schema().get_field("content").unwrap()
+    ) {
+        Ok(t) => t,
+        Err(_) => return q.to_string(),
+    };
+    let mut stream = tokenizer.token_stream(q);
+    let mut tokens: Vec<String> = Vec::new();
+    while let Some(tok) = stream.next() {
+        if !tok.text.trim().is_empty() {
+            tokens.push(tok.text.clone());
+        }
+    }
+    if tokens.is_empty() { q.to_string() } else { tokens.join(" ") }
+}
+
+impl FulltextIndex {
 
     /// 添加文档到索引（upsert 语义：先删除同 item_id 的旧文档再添加）
     pub fn add_document(&self, item_id: &str, title: &str, content: &str, source_type: &str) -> Result<()> {
@@ -115,6 +139,15 @@ impl FulltextIndex {
     }
 
     /// BM25 搜索 → Vec<(item_id, score)>
+    ///
+    /// 对中文 query 的特殊处理：
+    ///   Tantivy 的 QueryParser 对多字 CJK 字符串可能当作一个整 token 处理，
+    ///   不会调用字段的 jieba 分词器。结果："股东决议" 返回 0 命中，但
+    ///   "股东 决议"（带空格）能命中。
+    ///
+    /// 解决：若 query 含中文字符，先用 jieba 分词，把每个 token 之间插入
+    /// 空格再交给 QueryParser。QueryParser 默认是 should/OR 模式，任意
+    /// token 命中即可返回，保证召回。
     pub fn search(&self, query_str: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
         // 空查询直接返回：避免 tantivy AllQuery 全量扫描
         if query_str.trim().is_empty() {
@@ -126,8 +159,15 @@ impl FulltextIndex {
             .map_err(|e| VaultError::Crypto(format!("tantivy reader: {e}")))?;
         let searcher = reader.searcher();
 
+        // 若含中文，先 jieba 分词再拼回空格分隔
+        let effective_query = if query_str.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+            tokenize_cjk_query(&self.index, query_str)
+        } else {
+            query_str.to_string()
+        };
+
         let query_parser = QueryParser::for_index(&self.index, vec![self.f_title, self.f_content]);
-        let query = query_parser.parse_query(query_str)
+        let query = query_parser.parse_query(&effective_query)
             .map_err(|e| VaultError::Crypto(format!("tantivy query: {e}")))?;
 
         let top_docs = searcher.search(&query, &TopDocs::with_limit(top_k))
