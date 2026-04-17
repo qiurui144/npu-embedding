@@ -18,6 +18,66 @@ pub const DEFAULT_VECTOR_WEIGHT: f32 = 0.6;
 pub const DEFAULT_FULLTEXT_WEIGHT: f32 = 0.4;
 pub const INJECTION_BUDGET: usize = 2000;
 
+/// 启用 cross-encoder reranker 的最小候选数。
+/// 候选数 < 此阈值时，RRF 排序比 cross-encoder 重排更稳定（cross-encoder
+/// 在小候选集上放大噪声 / 跨语言错配）。
+pub const RERANK_MIN_CANDIDATES: usize = 5;
+
+/// Cross-lingual 降权系数。query 与 doc 语言不匹配时，该 doc 的 score 乘以此系数。
+/// 设为 0.3 而不是直接过滤：保留 cross-lingual 召回（专业术语常借用英文），
+/// 但不让大篇幅异语言文档压过同语言命中。
+pub const CROSS_LANG_PENALTY: f32 = 0.3;
+
+/// 判断文本的"主导语言"：zh / en / mixed。
+///
+/// 启发式：计算 CJK 统一表意文字（U+4E00..U+9FFF）占比
+///   - CJK >= 30% → Zh
+///   - ASCII letter >= 70% → En
+///   - 其他 → Mixed（不降权，因为专业术语常中英混用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lang { Zh, En, Mixed }
+
+pub fn detect_lang(s: &str) -> Lang {
+    let (mut cjk, mut ascii_alpha, mut total) = (0usize, 0usize, 0usize);
+    for c in s.chars() {
+        if c.is_whitespace() { continue; }
+        total += 1;
+        if ('\u{4e00}'..='\u{9fff}').contains(&c) { cjk += 1; }
+        else if c.is_ascii_alphabetic() { ascii_alpha += 1; }
+    }
+    if total == 0 { return Lang::Mixed; }
+    let cjk_ratio = cjk as f32 / total as f32;
+    let ascii_ratio = ascii_alpha as f32 / total as f32;
+    if cjk_ratio >= 0.30 { Lang::Zh }
+    else if ascii_ratio >= 0.70 { Lang::En }
+    else { Lang::Mixed }
+}
+
+/// 对 SearchResult 列表按 query/content 语言匹配降权。
+///
+/// - query=Mixed 或 doc=Mixed：不降权（尊重混用场景，如中文里的英文专业术语）
+/// - query.Lang != doc.Lang（Zh vs En 明确不同）：score *= CROSS_LANG_PENALTY
+///
+/// 仅用于为了检查 title 中的内容摘要判定。对于大文档，取 content 前 500 字作为
+/// 语言样本（避免过长导致判定被尾部数据污染）
+pub fn apply_cross_lang_penalty(results: &mut [SearchResult], query_lang: Lang) {
+    if matches!(query_lang, Lang::Mixed) {
+        return;
+    }
+    for r in results.iter_mut() {
+        // 用 title + 前 500 字判定文档语言（避免只看 content 可能因代码块偏向 en）
+        let sample: String = r.title.chars().chain(r.content.chars()).take(500).collect();
+        let doc_lang = detect_lang(&sample);
+        let cross = matches!(
+            (query_lang, doc_lang),
+            (Lang::Zh, Lang::En) | (Lang::En, Lang::Zh)
+        );
+        if cross {
+            r.score *= CROSS_LANG_PENALTY;
+        }
+    }
+}
+
 /// 搜索结果
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
@@ -210,21 +270,34 @@ pub fn search_with_context(
     }
     log::info!("search stages: items_decrypted={}", results.len());
 
-    // 5. Rerank（有 Reranker 时用 cross-encoder；有 query 向量时用余弦；否则跳过）
+    // 5. Rerank 策略：
+    //    a) 候选 < RERANK_MIN_CANDIDATES：跳过 cross-encoder，保留 RRF 序
+    //       （小集合上 cross-encoder 放大噪声 + 跨语言错配）
+    //    b) 候选够多：用 cross-encoder 重排
+    //    c) 无 cross-encoder 但有 query 向量 + 候选 <= 20：用 cosine 重排
+    //
+    // 语言降权（反 cross-lingual 污染）：任何 rerank 方式之后，都按
+    // query/doc 语言匹配对 score 做降权，防止大篇幅异语言文档排到前面。
+    let query_lang = detect_lang(query);
+
     if let Some(reranker) = &ctx.reranker {
-        let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
-        match reranker.score(query, &docs) {
-            Ok(scores) => {
-                for (r, s) in results.iter_mut().zip(scores.iter()) {
-                    r.score = *s;
+        if results.len() >= RERANK_MIN_CANDIDATES {
+            let docs: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
+            match reranker.score(query, &docs) {
+                Ok(scores) => {
+                    for (r, s) in results.iter_mut().zip(scores.iter()) {
+                        r.score = *s;
+                    }
                 }
-                results.sort_by(|a, b| b.score.partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal));
+                Err(e) => {
+                    log::warn!("reranker failed, keeping RRF order: {e}");
+                }
             }
-            Err(e) => {
-                // Cross-encoder 偶发失败不能让结果归零 — 保留 RRF 排序
-                log::warn!("reranker failed, keeping RRF order: {e}");
-            }
+        } else {
+            log::info!(
+                "search stages: reranker skipped (candidates={} < {})",
+                results.len(), RERANK_MIN_CANDIDATES
+            );
         }
     } else if results.len() <= RERANK_TOP_K_THRESHOLD {
         if let Some(qvec) = &query_vec {
@@ -233,6 +306,13 @@ pub fn search_with_context(
             }
         }
     }
+
+    // 语言匹配降权：任何排序策略之后统一应用，不改变同语言相对顺序
+    apply_cross_lang_penalty(&mut results, query_lang);
+
+    // 最终排序
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score)
+        .unwrap_or(std::cmp::Ordering::Equal));
 
     // 6. 截取 top_k（保护：如果 top_k=0，别截成空）
     let final_k = params.top_k.max(1);
@@ -244,6 +324,59 @@ pub fn search_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detect_lang_pure_chinese() {
+        assert_eq!(detect_lang("劳动合同法规定"), Lang::Zh);
+        assert_eq!(detect_lang("民法典第五百八十四条"), Lang::Zh);
+    }
+
+    #[test]
+    fn detect_lang_pure_english() {
+        assert_eq!(detect_lang("What is rust ownership and borrowing"), Lang::En);
+        assert_eq!(detect_lang("Box T smart pointer reference cycles"), Lang::En);
+    }
+
+    #[test]
+    fn detect_lang_technical_mix() {
+        // 中文为主但含英文术语 → 仍按中文处理（CJK >= 30%）
+        assert_eq!(detect_lang("使用 Box<T> 处理堆内存"), Lang::Zh);
+        // 少量中文的英文文档（< 30%）→ 英文
+        assert_eq!(detect_lang("Rust programming language 简称 RPL"), Lang::En);
+    }
+
+    #[test]
+    fn cross_lang_penalty_en_query_cn_doc_downweighted() {
+        let mut results = vec![
+            SearchResult {
+                item_id: "1".into(), score: 0.2, title: "references-and-borrowing".into(),
+                content: "In Rust, references allow you to refer to a value without taking ownership.".into(),
+                source_type: "file".into(), inject_content: None,
+            },
+            SearchResult {
+                item_id: "2".into(), score: 0.3, title: "民法典".into(),
+                content: "中华人民共和国民法典第一编 总则".into(),
+                source_type: "file".into(), inject_content: None,
+            },
+        ];
+        apply_cross_lang_penalty(&mut results, Lang::En);
+        assert_eq!(results[0].score, 0.2, "英文文档不降权");
+        assert!(results[1].score < 0.1, "中文文档应被降权 (0.3 * 0.3 = 0.09): {}",
+            results[1].score);
+    }
+
+    #[test]
+    fn cross_lang_penalty_mixed_query_no_penalty() {
+        let mut results = vec![
+            SearchResult {
+                item_id: "1".into(), score: 0.5, title: "rust 所有权".into(),
+                content: "Rust ownership system...".into(),
+                source_type: "file".into(), inject_content: None,
+            },
+        ];
+        apply_cross_lang_penalty(&mut results, Lang::Mixed);
+        assert_eq!(results[0].score, 0.5, "Mixed query 不应降权任何结果");
+    }
 
     #[test]
     fn rrf_fuse_basic() {
