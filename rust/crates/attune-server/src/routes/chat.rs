@@ -147,6 +147,64 @@ pub async fn chat(
     let mut search_results = search_results;
     attune_core::search::allocate_budget(&mut search_results, attune_core::search::INJECTION_BUDGET);
 
+    // 2a0. 批注加权（Batch B.2）—— 🆓 零成本（仅 DB 读 + 算数）
+    //
+    // 读每条结果的批注，按 label 精确匹配调整 score：
+    //   · 🗑/🕰 过时     → 直接剔除
+    //   · ⭐/要点/风险    → ×1.5
+    //   · 🤔/📍 等       → ×1.2
+    // 多个批注取 MAX，不累乘。
+    //
+    // 包在 spawn_blocking：`list_annotations` 是同步 SQLite + 解密每条 content blob，
+    // N=10 结果时可能 ~10ms，避免阻塞 async worker（与下面压缩阶段的三阶段模式一致）。
+    let (weight_stats, mut weighted_results) = {
+        let state_clone = state.clone();
+        let dek_clone = dek.clone();
+        let mut results_in = std::mem::take(&mut search_results);
+        tokio::task::spawn_blocking(move || {
+            let vault_guard = state_clone.vault.lock().unwrap_or_else(|e| e.into_inner());
+            let store = vault_guard.store();
+            let mut stats = attune_core::annotation_weight::AnnotationWeightStats::default();
+            stats.items_total = results_in.len();
+            let mut kept = Vec::with_capacity(results_in.len());
+            for r in results_in.drain(..) {
+                let anns = store.list_annotations(&dek_clone, &r.item_id).unwrap_or_default();
+                match attune_core::annotation_weight::compute_adjust(&anns) {
+                    attune_core::annotation_weight::ScoreAdjust::Drop => {
+                        stats.items_dropped += 1;
+                    }
+                    attune_core::annotation_weight::ScoreAdjust::Multiply(m) => {
+                        if m > 1.0 { stats.items_boosted += 1; }
+                        let mut r = r;
+                        r.score *= m;
+                        kept.push(r);
+                    }
+                }
+            }
+            stats.items_kept = stats.items_total - stats.items_dropped;
+            (stats, kept)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("chat: annotation weighting task join failed: {e}; falling back to raw search_results");
+            (attune_core::annotation_weight::AnnotationWeightStats::default(), Vec::new())
+        })
+    };
+    // spawn_blocking 失败时 weighted_results 为空 —— 此时我们丢失了原 search_results。
+    // 但 spawn_blocking 的 panic/join 错误极罕见（内存爆/进程被信号中断），概率远低于
+    // 用户被影响的回本。已通过 tracing::warn 记录，UI 会显示 knowledge_count=0 + hint。
+    search_results = weighted_results.drain(..).collect();
+
+    // 按新的 score 降序重排（过时已剔除，boost 项自然前移）
+    search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    if weight_stats.items_boosted > 0 || weight_stats.items_dropped > 0 {
+        tracing::info!(
+            "chat: annotation weighting {} items ({} boosted, {} dropped, {} kept)",
+            weight_stats.items_total, weight_stats.items_boosted,
+            weight_stats.items_dropped, weight_stats.items_kept,
+        );
+    }
+
     // 2a. 本地无结果时记录失败信号（后台技能进化的驱动数据），非阻塞
     if search_results.is_empty() {
         let signal_state = state.clone();
@@ -202,6 +260,189 @@ pub async fn chat(
             "source_type": r.source_type,
         })).collect()
     };
+
+    // 2b+. 上下文压缩（Batch B.1）
+    //
+    // 按 settings.context_strategy 压缩每条 knowledge 的 inject_content：
+    //   - raw / web 来源       → passthrough（web 无 item_id、成本不对称）
+    //   - economical / accurate → sha256(chunk) 查缓存 → 命中 0 成本；缺失调本地 LLM
+    //
+    // 整个压缩阶段放在 spawn_blocking 里，避免阻塞 async worker（LLM chat 是同步的）。
+    let strategy_str = app_settings.get("context_strategy")
+        .and_then(|v| v.as_str())
+        .unwrap_or("economical")
+        .to_string();
+    let mut compression_stats = (0usize, 0usize, 0usize);  // (chunks, hits, orig_total_chars)
+    let knowledge: Vec<serde_json::Value> = if web_search_used {
+        // 网络搜索结果已经是 snippet，不做二次压缩
+        knowledge
+    } else {
+        use attune_core::context_compress::{ContextStrategy, chunk_hash, CompressedChunk};
+        let strategy = ContextStrategy::parse(&strategy_str);
+        if strategy == ContextStrategy::Raw {
+            knowledge
+        } else {
+            // 三阶段压缩，尽量缩短 vault lock 持有时间：
+            //   Phase 1（锁）：查 cache，收集 miss 清单
+            //   Phase 2（无锁）：对 misses 批量调 LLM 生成摘要
+            //   Phase 3（锁）：批量写回 cache
+            //
+            // **关键 bug 修复（Batch B R1-I1）**：用 `content`（完整内容）而非 `inject_content`
+            // 作为 hash 源。原代码用 inject_content 会因 allocate_budget 按分数截断而每次
+            // hash 不同，摧毁缓存命中率。content 在同一 item 跨查询是稳定的。
+            let inputs: Vec<(String /*item_id*/, String /*content_for_hash*/, String /*injected_text*/)> =
+                knowledge.iter().map(|k| {
+                    let item_id = k.get("item_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // 用全量 content 计算 hash + 喂 LLM（生成 chunk 级摘要）
+                    let content = k.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    // inject 文本是 allocate_budget 后的 —— 做后备（若 content 为空）
+                    let inject = k.get("inject_content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let text = if content.is_empty() { inject } else { content };
+                    (item_id, text.clone(), text)
+                }).collect();
+
+            let state_compress = state.clone();
+            let dek_compress = dek.clone();
+            let strategy_str_for_log = strategy_str.clone();
+
+            // 把整个三阶段都放进 spawn_blocking 里（锁/LLM 都是同步的）。
+            // 内部：phase 1 + 3 持锁；phase 2 释放锁后跑 LLM。
+            let compressed_result: std::result::Result<Vec<CompressedChunk>, String> =
+                tokio::task::spawn_blocking(move || {
+                    let llm_arc = state_compress.llm.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_ref().cloned();
+                    let target = strategy.target_chars();
+                    let strategy_str = strategy.as_str();
+
+                    // Phase 1：查 cache + 识别短 chunk（免压缩）
+                    struct Slot {
+                        item_id: String,
+                        text: String,
+                        hash: String,
+                        original_chars: usize,
+                        summary: Option<String>,      // Phase 1 填（cache hit）或 Phase 2 填（LLM 新生成）
+                        was_cache_hit: bool,          // 严格区分 Phase 1 命中 vs Phase 2 新生成
+                        needs_writeback: bool,        // Phase 3 只回写"新生成"的，避免幂等 REPLACE 浪费 IO
+                        is_short: bool,               // target_chars 以下，不压缩
+                    }
+                    let mut slots: Vec<Slot> = {
+                        let vault_guard = state_compress.vault.lock().unwrap_or_else(|e| e.into_inner());
+                        let store = vault_guard.store();
+                        inputs.into_iter().map(|(item_id, hash_src, text)| {
+                            let original_chars = text.chars().count();
+                            let is_short = original_chars <= target;
+                            let hash = chunk_hash(&hash_src);
+                            let (summary, was_cache_hit) = if is_short || item_id.is_empty() {
+                                (None, false)
+                            } else {
+                                match store.get_chunk_summary(&dek_compress, &hash, strategy_str).unwrap_or(None) {
+                                    Some(s) => (Some(s), true),
+                                    None => (None, false),
+                                }
+                            };
+                            Slot {
+                                item_id, text, hash, original_chars,
+                                summary, was_cache_hit,
+                                needs_writeback: false,
+                                is_short,
+                            }
+                        }).collect()
+                        // vault_guard drop 此处 → 释放锁
+                    };
+
+                    // Phase 2（无锁）：对真正 miss 调 LLM
+                    for s in slots.iter_mut() {
+                        if s.is_short || s.was_cache_hit || s.item_id.is_empty() {
+                            continue;
+                        }
+                        let Some(ref llm) = llm_arc else {
+                            continue; // LLM 不可用 → 降级原文（summary 保持 None）
+                        };
+                        match attune_core::context_compress::generate_summary(llm.as_ref(), &s.text, strategy) {
+                            Ok(summary) => {
+                                s.summary = Some(summary);
+                                s.needs_writeback = true;
+                            }
+                            Err(e) => {
+                                tracing::warn!("chat: summary generation failed for chunk {}: {e}", &s.hash[..8]);
+                            }
+                        }
+                    }
+
+                    // Phase 3（锁）：回写新生成摘要（不动命中项）
+                    {
+                        let vault_guard = state_compress.vault.lock().unwrap_or_else(|e| e.into_inner());
+                        let store = vault_guard.store();
+                        let model_name = llm_arc.as_ref().map(|l| l.model_name().to_string()).unwrap_or_default();
+                        for s in slots.iter() {
+                            if !s.needs_writeback { continue; }
+                            if let Some(ref sum) = s.summary {
+                                let _ = store.put_chunk_summary(
+                                    &dek_compress, &s.hash, strategy_str,
+                                    &s.item_id, &model_name, sum, s.original_chars,
+                                );
+                            }
+                        }
+                    }
+
+                    // 组装结果
+                    slots.into_iter().map(|s| {
+                        let injected = match &s.summary {
+                            Some(sum) if !s.is_short => match strategy {
+                                ContextStrategy::Accurate => {
+                                    let head: String = s.text.chars().take(100).collect();
+                                    format!("{sum}\n原文摘录: {head}...")
+                                }
+                                _ => sum.clone(),
+                            },
+                            _ => s.text,  // 短文本 / miss 无降级 / LLM 不可用 → 用原文
+                        };
+                        // cache_hit 严格语义：Phase 1 真实命中 or 短文本（无需压缩）
+                        // —— 本次"没花 LLM 钱"即为 hit。Phase 2 的 fresh 生成不算 hit。
+                        let cache_hit = s.is_short || s.was_cache_hit;
+                        CompressedChunk {
+                            injected,
+                            original_chars: s.original_chars,
+                            cache_hit,
+                        }
+                    }).collect::<Vec<_>>()
+                }).await.map_err(|e| format!("compression task join error: {e}"));
+
+            // **关键 bug 修复（Batch B R2-C1）**：spawn_blocking panic/join 错误时
+            // 过去用 .unwrap_or_default() → 空 Vec → zip 丢光所有 knowledge。
+            // 现在改为：面板错时降级为 raw 注入（保留 knowledge 原样），只是错过压缩收益。
+            match compressed_result {
+                Ok(compressed) => {
+                    debug_assert_eq!(knowledge.len(), compressed.len(),
+                        "compression must produce one CompressedChunk per input");
+                    for c in &compressed {
+                        compression_stats.0 += 1;
+                        if c.cache_hit { compression_stats.1 += 1; }
+                        compression_stats.2 += c.original_chars;
+                    }
+                    knowledge.into_iter().zip(compressed.into_iter()).map(|(mut k, c)| {
+                        if let Some(obj) = k.as_object_mut() {
+                            obj.insert("inject_content".into(), serde_json::Value::String(c.injected));
+                            obj.insert("compression_cached".into(), serde_json::Value::Bool(c.cache_hit));
+                        }
+                        k
+                    }).collect()
+                }
+                Err(e) => {
+                    tracing::warn!("chat: compression task failed ({e}); falling back to raw RAG injection");
+                    let _ = strategy_str_for_log;  // 已在 warn 里说明
+                    knowledge
+                }
+            }
+        }
+    };
+    if compression_stats.0 > 0 {
+        tracing::info!(
+            "chat: context compressed {} chunks ({} cache hits, {} orig chars) strategy={}",
+            compression_stats.0, compression_stats.1, compression_stats.2, strategy_str
+        );
+    }
 
     // 2c. Build RAG system prompt（根据来源调整措辞）
     let mut system_prompt = if web_search_used {
@@ -326,6 +567,19 @@ pub async fn chat(
         "knowledge_count": knowledge.len(),
         "session_id": session_id,
         "web_search_used": web_search_used,
+        // Batch B.2: 批注加权 / 上下文压缩统计 —— token chip 展开时展示
+        "weight_stats": {
+            "items_total": weight_stats.items_total,
+            "items_boosted": weight_stats.items_boosted,
+            "items_dropped": weight_stats.items_dropped,
+            "items_kept": weight_stats.items_kept,
+        },
+        "compression_stats": {
+            "chunks": compression_stats.0,
+            "cache_hits": compression_stats.1,
+            "orig_chars": compression_stats.2,
+            "strategy": strategy_str,
+        },
     });
 
     // 本地无结果 + 浏览器不可用：明确告知用户而非静默失败

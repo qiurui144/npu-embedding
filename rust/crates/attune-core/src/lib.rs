@@ -1,6 +1,8 @@
 pub mod ai_annotator;
+pub mod annotation_weight;
 pub mod chat;
 pub mod chunker;
+pub mod context_compress;
 pub mod plugin_loader;
 pub mod plugin_sig;
 pub mod classifier;
