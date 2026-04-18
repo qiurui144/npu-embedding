@@ -1,169 +1,238 @@
-/** Attune 主应用根组件（Phase 2 · 组件 demo 版）
+/** Attune 主应用根组件（Phase 3 · wizard 路由就位）
  *
- * 此版本展示 Phase 2 产出的 primitives。下一 Phase 接入 wizard + layout。
+ * 启动流：
+ *   1. 读 /vault/status → vaultState
+ *   2. 读 /settings → wizardState（若存在）
+ *   3. 按矩阵路由：
+ *      - sealed           → Wizard (Step 1 Welcome)
+ *      - locked           → LoginScreen
+ *      - unlocked + !wizard.complete → 回到 Wizard.current_step
+ *      - unlocked + wizard.complete  → MainApp
+ *
+ * 下一 Phase（4）：MainApp 里接入 Sidebar + Chat view
  */
 
-import { useState, useEffect } from 'preact/hooks';
-import { Button, Input, Modal, Drawer, ToastContainer, toast, EmptyState } from './components';
-import { t, currentLocale, setLocale } from './i18n';
-import { theme, connectionState } from './store/signals';
+import type { JSX } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
+import { useSignal, useSignalEffect } from '@preact/signals';
+import { ToastContainer } from './components';
+import { Wizard, LoginScreen } from './wizard';
+import { api } from './store/api';
+import { theme } from './store/signals';
 import { startConnectionMonitor } from './store/connection';
 
-export function App() {
-  const [pwd, setPwd] = useState('');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+type VaultStatusResponse = {
+  state: 'sealed' | 'locked' | 'unlocked';
+  items?: number;
+};
 
-  // 启动连接监控（future: 会自动 ping /health）
+type SettingsResponse = {
+  wizard?: {
+    complete?: boolean;
+    current_step?: number;
+  };
+};
+
+type AppPhase =
+  | { kind: 'booting' }
+  | { kind: 'wizard' }
+  | { kind: 'login' }
+  | { kind: 'main' };
+
+export function App(): JSX.Element {
+  const phase = useSignal<AppPhase>({ kind: 'booting' });
+  const [bootError, setBootError] = useState<string | null>(null);
+
+  // 主题 attribute 跟随 signal
+  useSignalEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme.value);
+  });
+
+  // 启动
   useEffect(() => {
     startConnectionMonitor();
+    void bootstrap();
   }, []);
 
-  // 切主题 attribute
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme.value);
-  }, []);
+  async function bootstrap() {
+    try {
+      const status = await api.get<VaultStatusResponse>('/vault/status');
 
+      if (status.state === 'sealed') {
+        phase.value = { kind: 'wizard' };
+        return;
+      }
+
+      if (status.state === 'locked') {
+        phase.value = { kind: 'login' };
+        return;
+      }
+
+      // unlocked → 检查 wizard 是否完成
+      const settings = await api.get<SettingsResponse>('/settings').catch(() => ({}) as SettingsResponse);
+      if (settings.wizard?.complete) {
+        phase.value = { kind: 'main' };
+      } else {
+        // unlocked 但 wizard 未完成 → 回到 wizard
+        phase.value = { kind: 'wizard' };
+      }
+    } catch (e) {
+      setBootError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleWizardComplete() {
+    // 标记 wizard 已完成
+    try {
+      await api.patch('/settings', {
+        wizard: { complete: true },
+      });
+    } catch {
+      /* 失败不阻塞，下次启动仍会跳回 wizard */
+    }
+    phase.value = { kind: 'main' };
+  }
+
+  async function handleUnlock() {
+    const settings = await api.get<SettingsResponse>('/settings').catch(() => ({}) as SettingsResponse);
+    if (settings.wizard?.complete) {
+      phase.value = { kind: 'main' };
+    } else {
+      phase.value = { kind: 'wizard' };
+    }
+  }
+
+  if (bootError) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 'var(--space-5)',
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ maxWidth: 400 }}>
+          <div style={{ fontSize: 48, marginBottom: 'var(--space-3)' }}>⚠</div>
+          <h1 style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
+            启动失败
+          </h1>
+          <p
+            style={{
+              fontSize: 'var(--text-sm)',
+              color: 'var(--color-text-secondary)',
+              marginBottom: 'var(--space-4)',
+            }}
+          >
+            {bootError}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setBootError(null);
+              phase.value = { kind: 'booting' };
+              void bootstrap();
+            }}
+            style={{
+              padding: 'var(--space-2) var(--space-4)',
+              background: 'var(--color-accent)',
+              color: 'white',
+              border: 'none',
+              borderRadius: 'var(--radius-md)',
+              cursor: 'pointer',
+            }}
+          >
+            重试
+          </button>
+        </div>
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  if (phase.value.kind === 'booting') {
+    return <BootingSplash />;
+  }
+
+  if (phase.value.kind === 'wizard') {
+    return (
+      <>
+        <Wizard onComplete={handleWizardComplete} />
+        <ToastContainer />
+      </>
+    );
+  }
+
+  if (phase.value.kind === 'login') {
+    return (
+      <>
+        <LoginScreen onUnlock={handleUnlock} />
+        <ToastContainer />
+      </>
+    );
+  }
+
+  // Phase 3 最小 MainApp（Phase 4 会重写为 Sidebar + Chat 布局）
   return (
-    <main
+    <>
+      <MainAppPlaceholder />
+      <ToastContainer />
+    </>
+  );
+}
+
+function BootingSplash(): JSX.Element {
+  return (
+    <div
       style={{
+        minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: '100vh',
-        gap: 'var(--space-5)',
-        padding: 'var(--space-6)',
+        gap: 'var(--space-3)',
+        background: 'var(--color-bg)',
       }}
     >
-      <header style={{ textAlign: 'center' }}>
-        <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 600, marginBottom: 'var(--space-2)' }}>
-          🌿 {t('app.name')}
-        </h1>
-        <p style={{ fontSize: 'var(--text-lg)', color: 'var(--color-text-secondary)' }}>
-          {t('app.tagline')}
-        </p>
-        <p
-          style={{
-            fontSize: 'var(--text-sm)',
-            color: 'var(--color-text-secondary)',
-            maxWidth: 560,
-            marginTop: 'var(--space-3)',
-          }}
-        >
-          {t('app.promise')}
-        </p>
-      </header>
+      <div style={{ fontSize: 48 }} aria-hidden="true">
+        🌿
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        <span className="spinner" />
+        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
+          Attune 正在启动…
+        </span>
+      </div>
+    </div>
+  );
+}
 
-      <section
-        style={{
-          fontSize: 'var(--text-xs)',
-          color: 'var(--color-text-secondary)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-        }}
-      >
-        <span className={`status-dot ${connectionState.value}`} />
-        {t(`conn.${connectionState.value}`)}
-        <span style={{ margin: '0 var(--space-2)' }}>·</span>
-        Phase 2 · 组件库
-        <span style={{ margin: '0 var(--space-2)' }}>·</span>
-        Locale: {currentLocale.value}
-      </section>
-
-      {/* ─── 组件 demo ─── */}
-      <section
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-4)',
-          padding: 'var(--space-5)',
-          background: 'var(--color-surface)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: 'var(--shadow-md)',
-          maxWidth: 480,
-          width: '100%',
-        }}
-      >
-        <h3 style={{ fontSize: 'var(--text-base)', fontWeight: 600, margin: 0 }}>
-          组件 Primitives
-        </h3>
-
-        <Input
-          label={t('wizard.pwd.field')}
-          type="password"
-          value={pwd}
-          onInput={(e) => setPwd(e.currentTarget.value)}
-          hint="示例 · 实际 wizard 在 Phase 3"
-          placeholder="••••••••"
-        />
-
-        <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-          <Button variant="primary" onClick={() => toast('success', '保存成功')}>
-            Primary
-          </Button>
-          <Button variant="secondary" onClick={() => toast('info', '这是一条 info')}>
-            Secondary
-          </Button>
-          <Button variant="ghost" onClick={() => toast('warning', '请注意')}>
-            Ghost
-          </Button>
-          <Button variant="danger" onClick={() => toast('error', '出错了')}>
-            Danger
-          </Button>
-        </div>
-
-        <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-          <Button size="sm" onClick={() => setModalOpen(true)}>
-            打开 Modal
-          </Button>
-          <Button size="sm" onClick={() => setDrawerOpen(true)}>
-            打开 Drawer
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => setLocale(currentLocale.value === 'zh' ? 'en' : 'zh')}
-          >
-            切 locale ({currentLocale.value === 'zh' ? 'en' : 'zh'})
-          </Button>
-        </div>
-      </section>
-
-      {/* 空状态 demo */}
-      <section style={{ width: '100%', maxWidth: 640 }}>
-        <EmptyState
-          icon="💬"
-          title={t('empty.chat.title')}
-          description={t('empty.chat.desc')}
-          examples={['帮我检索最近的合同', '这份文件讲了什么？', '有类似的先行技术吗']}
-          onExampleClick={(ex) => toast('info', `点击：${ex}`)}
-        />
-      </section>
-
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="示例 Modal">
-        <p style={{ marginBottom: 'var(--space-4)' }}>
-          Modal 有 focus trap、ESC 关闭、backdrop click 关闭、滚动锁。
-        </p>
-        <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
-          <Button variant="ghost" onClick={() => setModalOpen(false)}>
-            {t('common.cancel')}
-          </Button>
-          <Button variant="primary" onClick={() => setModalOpen(false)}>
-            {t('common.confirm')}
-          </Button>
-        </div>
-      </Modal>
-
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="示例 Drawer">
-        <p>
-          Drawer 从右侧 slide in，可以拖拽左边界调节宽度。<br />
-          ESC 或点背景关闭。<br />
-          单层不叠加（见 spec §4）。
-        </p>
-      </Drawer>
-
-      <ToastContainer />
-    </main>
+function MainAppPlaceholder(): JSX.Element {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 'var(--space-3)',
+        padding: 'var(--space-5)',
+        textAlign: 'center',
+      }}
+    >
+      <div style={{ fontSize: 48 }} aria-hidden="true">
+        🌿
+      </div>
+      <h1 style={{ fontSize: 'var(--text-xl)', fontWeight: 600, margin: 0 }}>
+        Welcome to Attune
+      </h1>
+      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', maxWidth: 400 }}>
+        Main app 布局（Sidebar + Chat）将在 Phase 4 落地。
+        Wizard 流程已跑通，vault 状态路由就位。
+      </p>
+    </div>
   );
 }
