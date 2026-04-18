@@ -5,7 +5,13 @@ use axum::Json;
 use crate::state::SharedState;
 use attune_core::{chunker, parser};
 
-const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024; // 20 MB
+/// Upload size cap. 提到 100 MB：扫描版 PDF 常在 30-80MB，整本 OCR 很合理。
+/// 超过此值通常是高清扫描+彩图，建议用户预处理（pdftoppm 降 DPI、jpeg 压缩）。
+///
+/// ⚠ **必须与 `lib.rs` 中 `/api/v1/upload` 路由的 `DefaultBodyLimit::max(...)` 同步修改。**
+/// 框架层限制早于此检查触发（在 multipart 解码前拦截），此处检查是第二道防线，
+/// 防止 DefaultBodyLimit 被删除或未生效时的 OOM。两处写不一致会产生误导性行为。
+const MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024; // 100 MB
 
 pub async fn upload_file(
     State(state): State<SharedState>,

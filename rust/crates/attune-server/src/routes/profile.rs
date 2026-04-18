@@ -16,6 +16,10 @@ pub struct VaultProfile {
     pub cluster_snapshot: Option<serde_json::Value>,
     /// Histograms for quick preview (dimension → top values)
     pub histograms: std::collections::HashMap<String, Vec<serde_json::Value>>,
+    /// v2+: 所有批注（用户思考痕迹，个人知识库核心资产）
+    /// 兼容性：v1 profile 不含此字段，import 时 `None` 即可
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// GET /api/v1/profile/export — 导出当前分类结果 + 聚类 + 直方图
@@ -36,6 +40,17 @@ pub async fn export(
         if let Ok(Some(json)) = vault.store().get_tags_json(&dek, id) {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
                 tags_map.insert(id.clone(), parsed);
+            }
+        }
+    }
+    // 批注（v2+）：每个 item 的所有批注
+    let mut all_annotations = Vec::new();
+    for id in &ids {
+        if let Ok(anns) = vault.store().list_annotations(&dek, id) {
+            for a in anns {
+                if let Ok(v) = serde_json::to_value(&a) {
+                    all_annotations.push(v);
+                }
             }
         }
     }
@@ -62,7 +77,7 @@ pub async fn export(
 
     let item_count = tags_map.len();
     let profile = VaultProfile {
-        version: 1,
+        version: 2,  // v2：包含 annotations
         exported_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs().to_string())
@@ -72,6 +87,7 @@ pub async fn export(
         tags: tags_map,
         cluster_snapshot,
         histograms,
+        annotations: if all_annotations.is_empty() { None } else { Some(all_annotations) },
     };
 
     Ok(Json(serde_json::to_value(&profile).unwrap_or(serde_json::json!({}))))
@@ -82,9 +98,9 @@ pub async fn import(
     State(state): State<SharedState>,
     Json(profile): Json<VaultProfile>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    if profile.version != 1 {
+    if !matches!(profile.version, 1 | 2) {
         return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": format!("unsupported profile version: {}", profile.version)
+            "error": format!("unsupported profile version: {} (supported: 1, 2)", profile.version)
         }))));
     }
 

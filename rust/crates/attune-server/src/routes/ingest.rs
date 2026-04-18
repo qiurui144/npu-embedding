@@ -82,9 +82,10 @@ pub async fn ingest(
     }
 
     // Enqueue for embedding: two-layer indexing (sections L1 + chunks L2)
+    // chunk_counter 声明在外层以便响应返回 `chunks_queued`（与 /upload 对齐）
+    let mut chunk_counter = 0usize;
     {
         let sections = chunker::extract_sections(&body.content);
-        let mut chunk_counter = 0;
 
         // Level 1: section-level embeddings
         for (section_idx, section_text) in &sections {
@@ -120,6 +121,7 @@ pub async fn ingest(
 
     Ok(Json(serde_json::json!({
         "id": id,
-        "status": "ok"
+        "status": "ok",
+        "chunks_queued": chunk_counter
     })))
 }
