@@ -1,5 +1,7 @@
 pub mod chat;
 pub mod chunker;
+pub mod plugin_loader;
+pub mod plugin_sig;
 pub mod classifier;
 pub mod clusterer;
 pub mod crypto;

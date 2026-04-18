@@ -1,0 +1,32 @@
+id: ai_annotation_outdated
+name: AI 过时检测
+type: annotation_angle
+version: "1.0.0"
+author: attune-team
+category: general
+description: 标记可能已过时的技术、版本、时间点、术语
+
+label_prefix: "🕰 过时"
+default_color: yellow
+
+constraints:
+  max_findings: 5
+  max_snippet_chars: 150
+  min_snippet_chars: 4
+  temperature: 0.3
+
+prompt_file: prompt.md
+
+output:
+  schema:
+    type: object
+    required: [findings]
+    properties:
+      findings:
+        type: array
+        items:
+          type: object
+          required: [snippet, reason]
+          properties:
+            snippet: {type: string, minLength: 4, maxLength: 150}
+            reason: {type: string, minLength: 10, maxLength: 200}

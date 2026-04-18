@@ -1,0 +1,32 @@
+id: ai_annotation_questions
+name: AI 思考追问
+type: annotation_angle
+version: "1.0.0"
+author: attune-team
+category: general
+description: 找出值得进一步追问、思考的疑点
+
+label_prefix: "🤔 疑点"
+default_color: blue
+
+constraints:
+  max_findings: 5
+  max_snippet_chars: 150
+  min_snippet_chars: 4
+  temperature: 0.3
+
+prompt_file: prompt.md
+
+output:
+  schema:
+    type: object
+    required: [findings]
+    properties:
+      findings:
+        type: array
+        items:
+          type: object
+          required: [snippet, reason]
+          properties:
+            snippet: {type: string, minLength: 4, maxLength: 150}
+            reason: {type: string, minLength: 10, maxLength: 200}

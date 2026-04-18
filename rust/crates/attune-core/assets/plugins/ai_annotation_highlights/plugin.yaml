@@ -1,0 +1,32 @@
+id: ai_annotation_highlights
+name: AI 核心要点
+type: annotation_angle
+version: "1.0.0"
+author: attune-team
+category: general
+description: 总结最值得长期记忆的核心要点
+
+label_prefix: "⭐ 要点"
+default_color: green
+
+constraints:
+  max_findings: 5
+  max_snippet_chars: 150
+  min_snippet_chars: 4
+  temperature: 0.3
+
+prompt_file: prompt.md
+
+output:
+  schema:
+    type: object
+    required: [findings]
+    properties:
+      findings:
+        type: array
+        items:
+          type: object
+          required: [snippet, reason]
+          properties:
+            snippet: {type: string, minLength: 4, maxLength: 150}
+            reason: {type: string, minLength: 10, maxLength: 200}
