@@ -1,7 +1,7 @@
 /** Reader · 条目全文 + 批注 overlay · 挂在 Drawer 内 */
 
 import type { JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import { Button } from './Button';
 import { toast } from './Toast';
@@ -33,6 +33,7 @@ export function Reader({ itemId }: ReaderProps): JSX.Element {
   const loading = useSignal(true);
   const selection = useSignal<{ start: number; end: number; text: string } | null>(null);
   const aiLoading = useSignal<AnnotationAngle | null>(null);
+  const articleRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     loading.value = true;
@@ -49,7 +50,8 @@ export function Reader({ itemId }: ReaderProps): JSX.Element {
 
   function handleMouseUp(e: MouseEvent) {
     const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0 || !item.value) {
+    const article = articleRef.current;
+    if (!sel || sel.rangeCount === 0 || !item.value || !article) {
       selection.value = null;
       return;
     }
@@ -61,11 +63,6 @@ export function Reader({ itemId }: ReaderProps): JSX.Element {
     // Important 2.1 修复：用 DOM Range 相对 article 容器计算精确 offset
     // （indexOf 会把所有重复文本归到第一次出现处，导致后续重叠批注定位错误）
     const range = sel.getRangeAt(0);
-    const article = (e.currentTarget as HTMLElement) || document.querySelector('article');
-    if (!article) {
-      selection.value = null;
-      return;
-    }
     const preRange = range.cloneRange();
     preRange.selectNodeContents(article);
     preRange.setEnd(range.startContainer, range.startOffset);
@@ -254,6 +251,7 @@ export function Reader({ itemId }: ReaderProps): JSX.Element {
 
       {/* 内容（带批注高亮） */}
       <article
+        ref={articleRef}
         onMouseUp={handleMouseUp}
         style={{
           fontSize: 'var(--text-base)',
