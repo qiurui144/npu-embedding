@@ -17,8 +17,9 @@ import { useEffect, useState } from 'preact/hooks';
 import { useSignal, useSignalEffect } from '@preact/signals';
 import { ToastContainer } from './components';
 import { Wizard, LoginScreen } from './wizard';
+import { MainShell } from './layout';
 import { api } from './store/api';
-import { theme } from './store/signals';
+import { theme, vaultState } from './store/signals';
 import { startConnectionMonitor } from './store/connection';
 
 type VaultStatusResponse = {
@@ -57,6 +58,7 @@ export function App(): JSX.Element {
   async function bootstrap() {
     try {
       const status = await api.get<VaultStatusResponse>('/vault/status');
+      vaultState.value = status.state;
 
       if (status.state === 'sealed') {
         phase.value = { kind: 'wizard' };
@@ -94,6 +96,7 @@ export function App(): JSX.Element {
   }
 
   async function handleUnlock() {
+    vaultState.value = 'unlocked';
     const settings = await api.get<SettingsResponse>('/settings').catch(() => ({}) as SettingsResponse);
     if (settings.wizard?.complete) {
       phase.value = { kind: 'main' };
@@ -174,10 +177,10 @@ export function App(): JSX.Element {
     );
   }
 
-  // Phase 3 最小 MainApp（Phase 4 会重写为 Sidebar + Chat 布局）
+  // Phase 4：Main 布局（Sidebar + Views + Drawer）
   return (
     <>
-      <MainAppPlaceholder />
+      <MainShell />
       <ToastContainer />
     </>
   );
@@ -209,30 +212,3 @@ function BootingSplash(): JSX.Element {
   );
 }
 
-function MainAppPlaceholder(): JSX.Element {
-  return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'var(--space-3)',
-        padding: 'var(--space-5)',
-        textAlign: 'center',
-      }}
-    >
-      <div style={{ fontSize: 48 }} aria-hidden="true">
-        🌿
-      </div>
-      <h1 style={{ fontSize: 'var(--text-xl)', fontWeight: 600, margin: 0 }}>
-        Welcome to Attune
-      </h1>
-      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', maxWidth: 400 }}>
-        Main app 布局（Sidebar + Chat）将在 Phase 4 落地。
-        Wizard 流程已跑通，vault 状态路由就位。
-      </p>
-    </div>
-  );
-}
