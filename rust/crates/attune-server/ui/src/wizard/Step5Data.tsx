@@ -38,8 +38,26 @@ export function Step5Data({ ctx, onUpdate, onFinish }: Step5Props): JSX.Element 
       } else if (mode === 'import') {
         const file = fileInputRef.current?.files?.[0];
         if (file) {
+          // Critical 1.3 修复：文件大小 + shape 校验，防恶意 profile 打挂后端
+          const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
+          if (file.size > MAX_SIZE) {
+            throw new Error(`文件过大（>${(MAX_SIZE / 1024 / 1024).toFixed(0)}MB）`);
+          }
           const text = await file.text();
-          const profile = JSON.parse(text);
+          let profile: unknown;
+          try {
+            profile = JSON.parse(text);
+          } catch {
+            throw new Error('文件不是有效 JSON');
+          }
+          if (
+            !profile ||
+            typeof profile !== 'object' ||
+            Array.isArray(profile) ||
+            !('version' in (profile as object))
+          ) {
+            throw new Error('不是合法的 .vault-profile 文件（缺 version 字段）');
+          }
           await api.post('/profile/import', profile);
           onUpdate({ importedProfile: file.name });
           toast('success', `已导入 ${file.name}`);

@@ -4,6 +4,7 @@ import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import { useSignal, useComputed } from '@preact/signals';
 import { api } from '../store/api';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import {
   chatSessions,
   items,
@@ -37,6 +38,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps): JSX.Elem
   const query = useSignal('');
   const activeIdx = useSignal(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Important 2.5 修复：focus trap，Tab 不逃出 palette
+  const trapRef = useFocusTrap<HTMLDivElement>(open);
 
   // 全文搜索（条目内容）
   const searchResults = useSignal<Array<{ id: string; title: string }>>([]);
@@ -181,6 +184,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps): JSX.Elem
       }}
     >
       <div
+        ref={trapRef}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKey}
         className="modal-in"

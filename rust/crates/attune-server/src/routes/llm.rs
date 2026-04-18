@@ -5,6 +5,8 @@
 //!
 //! 见 spec `2026-04-19-frontend-redesign-design.md §6`。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
@@ -12,6 +14,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::SharedState;
 use attune_core::llm::{ChatMessage, LlmProvider, OpenAiLlmProvider};
+
+/// 同一时间最多 2 个 ollama pull 进程（防资源耗尽，见 CRITICAL 1.2）
+static PULL_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONCURRENT_PULLS: usize = 2;
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -118,10 +124,22 @@ pub async fn pull_model(
         ));
     }
 
+    // 并发上限守卫（Critical 1.2 修复）
+    let inflight = PULL_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+    if inflight >= MAX_CONCURRENT_PULLS {
+        PULL_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": format!("too many concurrent pulls (max {MAX_CONCURRENT_PULLS})"),
+            })),
+        ));
+    }
+
     let task_id = format!("pull-{}", uuid::Uuid::new_v4());
     let task_id_ret = task_id.clone();
 
-    // 后台跑 `ollama pull <model>`（不等待；通过 WS 推进度时由 worker 侧实现）
+    // 后台跑 `ollama pull <model>`（不等待；进度推送由 WS 侧实现）
     tokio::spawn(async move {
         let out = tokio::process::Command::new("ollama")
             .arg("pull")
@@ -143,6 +161,8 @@ pub async fn pull_model(
                 tracing::warn!("model pull spawn error: {model} (task={task_id}) err={e}");
             }
         }
+        // 无论成功失败都释放计数
+        PULL_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     });
 
     Ok(Json(ModelPullResponse {

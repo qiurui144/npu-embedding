@@ -8,17 +8,26 @@ import { backgroundTasks } from './signals';
 import type { BackgroundTask } from './signals';
 
 let ws: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let stopped = false;
 let backoff = 500;
 const MAX_BACKOFF = 30_000;
 
 export function startProgressWS(): void {
   stopProgressWS();
+  stopped = false;
   connect();
 }
 
 export function stopProgressWS(): void {
+  stopped = true;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (ws) {
     ws.onclose = null;
+    ws.onerror = null;
     ws.close();
     ws = null;
   }
@@ -51,7 +60,11 @@ function connect(): void {
 }
 
 function scheduleReconnect(): void {
-  setTimeout(connect, backoff);
+  if (stopped) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!stopped) connect();
+  }, backoff);
   backoff = Math.min(backoff * 2, MAX_BACKOFF);
 }
 

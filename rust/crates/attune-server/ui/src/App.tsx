@@ -14,14 +14,14 @@
 
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { useSignal, useSignalEffect } from '@preact/signals';
+import { useSignal } from '@preact/signals';
 import { ToastContainer } from './components';
 import { CommandPalette } from './components/CommandPalette';
 import { Wizard, LoginScreen } from './wizard';
 import { MainShell } from './layout';
 import { useShortcut } from './hooks/useShortcut';
 import { api } from './store/api';
-import { theme, vaultState, sidebarCollapsed } from './store/signals';
+import { vaultState, sidebarCollapsed } from './store/signals';
 import { startConnectionMonitor } from './store/connection';
 import { startProgressWS } from './store/ws';
 
@@ -48,11 +48,8 @@ export function App(): JSX.Element {
   const paletteOpen = useSignal(false);
   const [bootError, setBootError] = useState<string | null>(null);
 
-  // 主题 attribute 跟随 signal
-  useSignalEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme.value);
-  });
-
+  // Minor 3.4 修复：theme attribute 已经在 store/signals.ts 的 subscribe 里写过了，
+  // 这里移除重复写入避免双源。
   // 全局快捷键：⌘K 打开 palette，⌘B 折叠 sidebar
   useShortcut({
     key: 'k',

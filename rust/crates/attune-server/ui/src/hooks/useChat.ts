@@ -81,12 +81,17 @@ export type SendOptions = {
   onDone?: (message: Message) => void;
 };
 
+// Important 2.6 修复：并发发送守卫
+let sendInFlight = false;
+
 export async function sendMessage(
   text: string,
   _opts?: SendOptions,
 ): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
+  if (sendInFlight) return; // 有请求在飞，忽略新发送
+  sendInFlight = true;
 
   // Optimistic 用户消息
   const userMsg: Message = {
@@ -150,6 +155,8 @@ export async function sendMessage(
       created_at: new Date().toISOString(),
     };
     messages.value = [...messages.value, errMsg];
+  } finally {
+    sendInFlight = false;
   }
 }
 

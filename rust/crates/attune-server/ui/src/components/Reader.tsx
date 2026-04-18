@@ -58,10 +58,18 @@ export function Reader({ itemId }: ReaderProps): JSX.Element {
       selection.value = null;
       return;
     }
-    // 在原文里找 offset（简单 indexOf；可能有重复匹配，取 click 附近的）
-    const content = item.value.content;
-    const start = content.indexOf(text);
-    if (start < 0) return;
+    // Important 2.1 修复：用 DOM Range 相对 article 容器计算精确 offset
+    // （indexOf 会把所有重复文本归到第一次出现处，导致后续重叠批注定位错误）
+    const range = sel.getRangeAt(0);
+    const article = (e.currentTarget as HTMLElement) || document.querySelector('article');
+    if (!article) {
+      selection.value = null;
+      return;
+    }
+    const preRange = range.cloneRange();
+    preRange.selectNodeContents(article);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    const start = preRange.toString().length;
     selection.value = {
       start,
       end: start + text.length,

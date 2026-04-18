@@ -5,7 +5,7 @@ import { useState } from 'preact/hooks';
 import { Button, Input } from '../components';
 import { toast } from '../components/Toast';
 import { t } from '../i18n';
-import { api, setToken } from '../store/api';
+import { api, setToken, RETRY_POLICIES } from '../store/api';
 
 export type LoginScreenProps = {
   onUnlock: () => void;
@@ -22,9 +22,11 @@ export function LoginScreen({ onUnlock }: LoginScreenProps): JSX.Element {
     setSubmitting(true);
     setError(null);
     try {
+      // Important 2.3：密码验证不走自动重试（防失败锁账号）
       const res = await api.post<{ status: string; token?: string }>(
         '/vault/unlock',
         { password: pwd },
+        RETRY_POLICIES.destructive,
       );
       if (res.token) setToken(res.token);
       toast('success', '已解锁');

@@ -143,6 +143,7 @@ function TypingCaret(): JSX.Element {
   return (
     <span
       aria-hidden="true"
+      className="blink"
       style={{
         display: 'inline-block',
         width: 2,
@@ -150,8 +151,6 @@ function TypingCaret(): JSX.Element {
         background: 'var(--color-accent)',
         marginLeft: 2,
         verticalAlign: 'text-bottom',
-        animation: 'spinner-rotate 0ms', // 借用，避免空引用；下面我们加专用 keyframes
-        opacity: 0.7,
       }}
     />
   );

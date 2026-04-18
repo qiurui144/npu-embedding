@@ -15,7 +15,7 @@ import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import { EmptyState, ChatMessage, ChatInput } from '../components';
 import { t } from '../i18n';
-import { activeSessionId, messages, chatSessions } from '../store/signals';
+import { activeSessionId, messages, chatSessions, settings } from '../store/signals';
 import { loadSession, sendMessage, clearActiveSession } from '../hooks/useChat';
 import type { Message } from '../store/signals';
 
@@ -42,7 +42,7 @@ export function ChatView(): JSX.Element {
         flexDirection: 'column',
       }}
     >
-      <ChatHeader title={session?.title ?? '新对话'} />
+      <ChatHeader title={session?.title ?? '新对话'} model={getCurrentModel()} />
       <MessageList />
       <ChatInput
         onSend={async (text) => {
@@ -54,8 +54,15 @@ export function ChatView(): JSX.Element {
   );
 }
 
+// Minor 3.1 修复：从 settings 读当前模型而非硬编码
+function getCurrentModel(): string {
+  const s = settings.value;
+  const llm = s?.llm as { model?: string } | undefined;
+  return llm?.model ?? 'qwen2.5:3b';
+}
+
 // ── Chat 顶栏 ────────────────────────────────────────────────
-function ChatHeader({ title }: { title: string }): JSX.Element {
+function ChatHeader({ title, model }: { title: string; model: string }): JSX.Element {
   return (
     <header
       style={{
@@ -81,7 +88,7 @@ function ChatHeader({ title }: { title: string }): JSX.Element {
       >
         {title}
       </h1>
-      <ModelChip model="qwen2.5:3b" />
+      <ModelChip model={model} />
     </header>
   );
 }

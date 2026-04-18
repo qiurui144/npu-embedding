@@ -1,7 +1,7 @@
 /** Attune Modal · Focus trap + Esc close + backdrop click close */
 
 import type { ComponentChildren, JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useId } from 'preact/hooks';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export type ModalProps = {
@@ -26,6 +26,8 @@ export function Modal({
   disableEscClose = false,
 }: ModalProps): JSX.Element | null {
   const ref = useFocusTrap<HTMLDivElement>(open);
+  // Important 2.7 修复：为每个 Modal 实例生成唯一 id（多 Modal 共存时避免 id 冲突）
+  const titleId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +68,7 @@ export function Modal({
         ref={ref}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={title ? 'modal-title' : undefined}
+        aria-labelledby={title ? titleId : undefined}
         className="modal-in"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -89,7 +91,7 @@ export function Modal({
             }}
           >
             <h2
-              id="modal-title"
+              id={titleId}
               style={{ fontSize: 'var(--text-lg)', fontWeight: 600, margin: 0 }}
             >
               {title}

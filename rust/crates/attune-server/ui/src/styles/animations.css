@@ -169,3 +169,18 @@
     opacity: 0.4;
   }
 }
+
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.blink {
+  animation: blink 800ms steps(2, start) infinite;
+}

@@ -4,7 +4,7 @@ import type { JSX } from 'preact';
 import { useState, useMemo } from 'preact/hooks';
 import { Button, Input } from '../components';
 import { t } from '../i18n';
-import { api, setToken } from '../store/api';
+import { api, setToken, RETRY_POLICIES } from '../store/api';
 import { toast } from '../components/Toast';
 
 type Strength = 'weak' | 'medium' | 'strong';
@@ -65,9 +65,11 @@ export function Step2Password({ onContinue }: Step2Props): JSX.Element {
     setSubmitting(true);
     setError(null);
     try {
+      // Important 2.3：密码 setup 不走自动重试
       const res = await api.post<{ status: string; state?: string; token?: string }>(
         '/vault/setup',
         { password: pwd },
+        RETRY_POLICIES.destructive,
       );
       if (res.token) setToken(res.token);
 
