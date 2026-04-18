@@ -18,3 +18,9 @@ export type { SkeletonProps } from './Skeleton';
 
 export { EmptyState } from './EmptyState';
 export type { EmptyStateProps, EmptyStateAction } from './EmptyState';
+
+export { ChatMessage } from './ChatMessage';
+export type { ChatMessageProps } from './ChatMessage';
+
+export { ChatInput } from './ChatInput';
+export type { ChatInputProps } from './ChatInput';

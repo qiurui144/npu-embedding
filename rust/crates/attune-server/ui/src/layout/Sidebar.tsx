@@ -3,6 +3,7 @@
  */
 
 import type { JSX } from 'preact';
+import { useEffect } from 'preact/hooks';
 import { useSignal } from '@preact/signals';
 import {
   currentView,
@@ -13,6 +14,7 @@ import {
   vaultState,
 } from '../store/signals';
 import type { View } from '../store/signals';
+import { loadSessions, clearActiveSession } from '../hooks/useChat';
 import { t } from '../i18n';
 
 const SIDEBAR_WIDTH = 280;
@@ -21,6 +23,11 @@ const SIDEBAR_COLLAPSED_WIDTH = 64;
 export function Sidebar(): JSX.Element {
   const collapsed = sidebarCollapsed.value;
   const width = collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
+
+  // 挂载时加载 session 列表
+  useEffect(() => {
+    void loadSessions();
+  }, []);
 
   return (
     <aside
@@ -146,7 +153,7 @@ function NewChatButton({ collapsed }: { collapsed: boolean }): JSX.Element {
         type="button"
         aria-label="New chat"
         onClick={() => {
-          activeSessionId.value = null;
+          clearActiveSession();
           currentView.value = 'chat';
         }}
         className="interactive"
