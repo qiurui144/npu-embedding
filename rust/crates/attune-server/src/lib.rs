@@ -154,7 +154,7 @@ pub async fn run_in_runtime(
     config: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().expect("'info' is a valid log directive")))
         .try_init();
 
     let hw = attune_core::platform::HardwareProfile::detect();

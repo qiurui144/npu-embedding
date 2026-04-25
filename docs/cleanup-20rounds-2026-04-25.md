@@ -703,3 +703,103 @@ CLAUDE.md / `docs/TESTING.md` 要求：
 - ❌ 不重写 `attune-server/tests/` — Sprint 1 + 2 才合适做
 
 ---
+
+## R11 — 错误处理 gap audit
+
+**Status**: DONE
+**Commit**: TBD-after-commit
+
+### 全局统计（prod path，排除 `#[cfg(test)] mod tests` 之后内容 + `tests/` 目录）
+
+- prod-path `unwrap()` 总数：**25**（含整工作区：attune-core / attune-server / attune-cli / apps/attune-desktop）
+- prod-path `expect(...)` 总数：**11**（已存在）
+- prod-path `panic!` / `unimplemented!` / `todo!`：**2**（均在 `attune-core/src/ai_annotator.rs`，见下文 E 类）
+
+> 含测试模块时 `unwrap` 总数为 540 — 也即测试代码占了 95% 以上，prod path 干净度已经较高。
+
+### Top files（prod-path unwrap）
+
+| Count | File |
+|-------|------|
+| 9 | `rust/crates/attune-core/src/index.rs` |
+| 4 | `rust/crates/attune-core/src/vectors.rs` |
+| 3 | `rust/crates/attune-cli/src/main.rs` |
+| 2 | `rust/crates/attune-server/src/state.rs` |
+| 2 | `rust/crates/attune-core/src/llm.rs` |
+| 2 | `apps/attune-desktop/src/main.rs` |
+| 1 | `rust/crates/attune-server/src/lib.rs` |
+| 1 | `rust/crates/attune-core/src/infer/mod.rs` |
+| 1 | `apps/attune-desktop/src/tray.rs` |
+
+### 分类
+
+| 类别 | 含义 | 数量 | 处理 |
+|------|------|------|------|
+| **A 静态保证** | schema 字段已定义、固定字节切片、内置类型 serde、常量 NonZeroUsize | **18** | 改 `expect("具体原因")` 提高诊断 |
+| **B mutex poison** | Mock provider 内 `lock().unwrap()`（poison 时丢内容反而不安全） | **3** | 改 `unwrap_or_else(\|e\| e.into_inner())` 与同模块其他 mutex 一致 |
+| **C 可改 `?`** | 在返回 Result 的 fn 内可 `?` 转换 | **0** | 无 |
+| **D 设计层 issue** | fn 签名应返回 Result 但当前 panic | **0** | 无 |
+| **E 启动 fail-fast** | main / build_router / Tauri setup 内的 unwrap，运行期不会触 | **4** | 改 `expect("具体原因")`（含静态 plugin yaml panic!） |
+
+### 本轮 fix（A 类 + E 类，仅诊断改进，零行为变化）
+
+| File | 旧 | 新 |
+|------|----|---|
+| `attune-core/src/index.rs:36-39, 57-60, 97` (×9) | `schema.get_field("X").unwrap()` | `expect("schema field 'X' defined in build_schema")` |
+| `attune-core/src/vectors.rs:183, 237, 245, 253` (×4) | `bytes.try_into().unwrap()` | `expect("8-byte slice (length checked)")` 或 `expect("8-byte slice (range fixed)")` |
+| `attune-cli/src/main.rs:88, 98, 108` (×3) | `serde_json::to_string_pretty(&X).unwrap()` | `expect("X is serializable")` |
+| `attune-server/src/state.rs:85` | `NonZeroUsize::new(SEARCH_CACHE_CAPACITY).unwrap()` | `expect("SEARCH_CACHE_CAPACITY is non-zero const")` |
+| `attune-server/src/state.rs:537` | `embedding.unwrap()` | `expect("is_none() checked above")` |
+| `attune-server/src/lib.rs:157` | `"info".parse().unwrap()` | `expect("'info' is a valid log directive")` |
+| `attune-core/src/infer/mod.rs:29` | `self.scores.lock().unwrap()` | `unwrap_or_else(\|e\| e.into_inner())` |
+| `attune-core/src/llm.rs:366, 372` (×2) | `self.responses.lock().unwrap()` | `unwrap_or_else(\|e\| e.into_inner())` |
+| `apps/attune-desktop/src/main.rs:12` | `"info".parse().unwrap()` | `expect("'info' is a valid log directive")` |
+| `apps/attune-desktop/src/main.rs:41` | `url.parse().unwrap()` | `expect("embedded server URL is well-formed")` |
+| `apps/attune-desktop/src/tray.rs:15` | `app.default_window_icon().unwrap()` | `expect("default window icon embedded via tauri.conf.json")` |
+
+**总计 fix**：25 个 `unwrap()` → 22 改 `expect(...)`，3 改 `unwrap_or_else(|e| e.into_inner())`（mutex poison-safe，与 routes/state 中其他 mutex 保持一致 idiom）。
+
+**Post-fix 验证（同一脚本 grep）**：
+```
+prod-path bare unwrap() 剩余总数：0
+```
+
+**含义**：attune 整工作区（attune-core / attune-server / attune-cli / apps/attune-desktop）prod path 现在 **零 bare unwrap()**。所有 fallible 调用要么用 `?` 走 Result，要么用 `expect("具体语义")` 显式表达静态保证，要么用 `unwrap_or_else(|e| e.into_inner())` poison-safe 处理 mutex。
+
+### 保留未改（panic! / 故意性 fail-fast）
+
+`attune-core/src/ai_annotator.rs:95-97`：
+
+```rust
+.unwrap_or_else(|e| panic!("builtin ai_annotation_{angle_tag} plugin yaml broken: {e}"));
+```
+
+**不改原因**：内置 plugin YAML 编译期 `include_str!` 嵌入二进制，发布前 CI 跑 `cargo test` 必定执行 `Plugin::from_yaml`。如果 yaml broken 是构建期 bug，启动 panic 是正确行为（fail-fast），运行时永远不会触。改 Result 反而要求所有调用方处理一个不可能发生的错误，污染签名。
+
+### Backlog（C / D 类 — 无）
+
+**当前 audit 没有发现**：
+- C 类（fn 已返回 Result 但用了 unwrap） — 0
+- D 类（fn 应返回 Result 但当前 panic） — 0
+
+**意味着**：经过前 10 轮清理 + 已有的 `expect("HTTP client")`/`expect("HMAC key length valid")` 等改进，attune 的错误处理已经接近"所有真错误走 Result，所有 unwrap 都是不可达"。R11 收尾把剩余 unwrap 从无诊断信息升级到带上下文的 `expect`。
+
+### Tests
+
+| Phase | 命令 | 结果 |
+|-------|------|------|
+| Pre-fix | `cargo test --workspace` | 377 passed |
+| Post-fix | `cargo test --workspace` | **377 passed**（零行为变化，仅 panic 消息升级） |
+
+### 跨平台影响
+
+- 全部改动是诊断字符串 / mutex poison 处理，无平台特性 — Linux/Windows/aarch64 行为一致
+- `apps/attune-desktop` 改动 unwrap 主要影响 Windows MSI 启动期的 panic message 可读性（之前是 "called `Option::unwrap()` on a `None` value"，现在是 "default window icon embedded via tauri.conf.json"）
+
+### Skip 理由
+
+- ❌ 不重构 fn 签名（C / D 类不存在；如果存在也属大改）
+- ❌ 不改 `panic!` in ai_annotator.rs — 是合理 fail-fast，改 Result 污染所有调用方
+- ❌ 不改测试模块内的 unwrap — 测试 panic 即测试失败，是 idiom
+
+---

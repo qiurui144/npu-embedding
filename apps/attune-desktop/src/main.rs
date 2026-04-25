@@ -9,7 +9,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("info".parse().unwrap()),
+                .add_directive("info".parse().expect("'info' is a valid log directive")),
         )
         .init();
 
@@ -38,7 +38,7 @@ fn main() {
                         if let Err(e) = WebviewWindowBuilder::new(
                             &app_handle,
                             "main",
-                            WebviewUrl::External(url.parse().unwrap()),
+                            WebviewUrl::External(url.parse().expect("embedded server URL is well-formed")),
                         )
                         .title("Attune")
                         .inner_size(1280.0, 800.0)

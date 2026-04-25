@@ -12,7 +12,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
     let _tray = TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(app.default_window_icon().expect("default window icon embedded via tauri.conf.json").clone())
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
