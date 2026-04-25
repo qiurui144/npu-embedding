@@ -807,7 +807,7 @@ prod-path bare unwrap() 剩余总数：0
 ## R12 — 跨平台 gap audit（Windows readiness）
 
 **Status**: DONE
-**Commit**: <pending>
+**Commit**: 7546a46
 
 R4 已审查 `cfg(unix)` syscall 边界，本轮扩展到全部 6 个跨平台维度，覆盖 Win build 在静态层面的所有已知风险点。
 
