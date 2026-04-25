@@ -5,8 +5,6 @@
   "identifier": "ai.attune.desktop",
   "build": {
     "frontendDist": "../../rust/crates/attune-server/ui/dist",
-    "beforeBuildCommand": "cd ../../rust/crates/attune-server/ui && npm run build",
-    "beforeDevCommand": "cd ../../rust/crates/attune-server/ui && npm run dev",
     "devUrl": "http://localhost:5173"
   },
   "app": {
