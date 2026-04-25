@@ -10,8 +10,8 @@ name = "attune_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "attune-server"
-path = "src/main.rs"
+name = "attune-server-headless"
+path = "src/bin/headless.rs"
 
 [dependencies]
 attune-core = { path = "../attune-core" }
