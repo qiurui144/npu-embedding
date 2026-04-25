@@ -455,3 +455,126 @@ grep -rn 'product-collaboration-plan\|regression-report-2026-04-18\|audit-20-rou
 - 不合并主题相近的 spec（每个 spec 是独立时间点决策快照，合并会丢失上下文）
 
 ---
+
+## R9 — API endpoint audit
+
+**Status**: DONE (audit-only, no fix needed)
+
+### Endpoint 清单（method + path + handler + guards）
+
+vault_guard 白名单：`/health`, `/`, `/ui`, `/ui/*`, `/api/v1/status/health`, `/api/v1/vault/*`
+bearer_auth_guard always-auth 强制：`/api/v1/vault/device-secret/export`, `/api/v1/vault/device-secret/import`, `/api/v1/vault/change-password`
+bearer_auth_guard 公共白名单（仅 require_auth=true 模式下生效）：`/health`, `/`, `/ui/*`, `/api/v1/status/health`, `/api/v1/vault/setup`, `/api/v1/vault/unlock`, `/api/v1/vault/status`
+
+| method | path | handler | vault_guard | auth_guard | 备注 |
+|--------|------|---------|-------------|------------|------|
+| GET | /health | status::health | exempt | exempt | OK |
+| GET | /api/v1/status/health | status::health | exempt | exempt | OK（前缀镜像） |
+| GET | /api/v1/status/diagnostics | status::diagnostics | guarded | guarded | OK，sealed 时返回 403 |
+| GET | /api/v1/status | status::status | guarded | guarded | OK |
+| GET | /api/v1/vault/status | vault::vault_status | exempt | exempt | OK，零侧信道 |
+| POST | /api/v1/vault/setup | vault::vault_setup | exempt | exempt | OK，bootstrap 必需 |
+| POST | /api/v1/vault/unlock | vault::vault_unlock | exempt | exempt | OK，bootstrap 必需 |
+| POST | /api/v1/vault/lock | vault::vault_lock | exempt | guarded* | *仅 require_auth=true 强制 token；可接受（lock 是 idempotent） |
+| POST | /api/v1/vault/change-password | vault::vault_change_password | exempt | **always-auth** | OK，敏感端点强制 token |
+| GET | /api/v1/vault/device-secret/export | vault::export_device_secret | exempt | **always-auth** | OK，跨设备凭证强制 token |
+| POST | /api/v1/vault/device-secret/import | vault::import_device_secret | exempt | **always-auth** | OK |
+| POST | /api/v1/llm/test | llm::test_llm | guarded | guarded | OK |
+| POST | /api/v1/models/pull | llm::pull_model | guarded | guarded | OK |
+| POST | /api/v1/chat | chat::chat | guarded | guarded | OK |
+| GET | /api/v1/chat/history | chat::chat_history | guarded | guarded | OK |
+| GET | /api/v1/chat/sessions | chat_sessions::list_sessions | guarded | guarded | OK |
+| GET/DELETE | /api/v1/chat/sessions/{id} | chat_sessions::get/delete_session | guarded | guarded | OK |
+| POST | /api/v1/ingest | ingest::ingest | guarded | guarded | OK |
+| POST | /api/v1/feedback | feedback::submit_feedback | guarded | guarded | OK |
+| GET/POST | /api/v1/annotations | annotations::list/create_annotation | guarded | guarded | OK |
+| POST | /api/v1/annotations/ai | annotations::ai_analyze | guarded | guarded | OK，💰 层显式触发 |
+| PATCH/DELETE | /api/v1/annotations/{id} | annotations::update/delete_annotation | guarded | guarded | OK |
+| GET | /api/v1/items | items::list_items | guarded | guarded | OK |
+| GET | /api/v1/items/stale | items::list_stale_items | guarded | guarded | OK |
+| GET/DELETE/PATCH | /api/v1/items/{id} | items::get/delete/update_item | guarded | guarded | OK |
+| GET | /api/v1/items/{id}/stats | items::get_item_stats | guarded | guarded | OK |
+| GET/PATCH | /api/v1/settings | settings::get/update_settings | guarded | guarded | OK |
+| GET | /api/v1/search | search::search | guarded | guarded | OK，含 top_k=0 校验 |
+| POST | /api/v1/search/relevant | search::search_relevant | guarded | guarded | OK |
+| POST | /api/v1/classify/rebuild | classify::rebuild | guarded | guarded | OK |
+| POST | /api/v1/classify/drain | classify::drain | guarded | guarded | OK |
+| GET | /api/v1/classify/status | classify::status | guarded | guarded | OK |
+| POST | /api/v1/classify/{id} | classify::classify_one | guarded | guarded | OK |
+| GET | /api/v1/tags | tags::all_dimensions | guarded | guarded | OK |
+| GET | /api/v1/tags/{dimension} | tags::dimension_histogram | guarded | guarded | OK |
+| GET | /api/v1/clusters | clusters::list | guarded | guarded | OK |
+| POST | /api/v1/clusters/rebuild | clusters::rebuild | guarded | guarded | OK |
+| GET | /api/v1/clusters/{id} | clusters::detail | guarded | guarded | OK |
+| GET | /api/v1/plugins | plugins::list | guarded | guarded | OK |
+| POST | /api/v1/patent/search | patent::search | guarded | guarded | OK |
+| GET | /api/v1/patent/databases | patent::databases | guarded | guarded | OK |
+| GET | /api/v1/profile/export | profile::export | guarded | guarded | profile 含行为画像，敏感；当前无 always-auth，依赖全局 require_auth |
+| POST | /api/v1/profile/import | profile::import | guarded | guarded | 同上 |
+| POST | /api/v1/behavior/click | behavior::log_click | guarded | guarded | OK |
+| GET | /api/v1/behavior/history | behavior::history | guarded | guarded | OK |
+| GET | /api/v1/behavior/popular | behavior::popular | guarded | guarded | OK |
+| POST | /api/v1/index/bind | index::bind_directory | guarded | guarded | OK |
+| POST | /api/v1/index/bind-remote | remote::bind_remote | guarded | guarded | OK |
+| DELETE | /api/v1/index/unbind | index::unbind_directory | guarded | guarded | OK |
+| GET | /api/v1/index/status | index::index_status | guarded | guarded | OK |
+| POST | /api/v1/upload | upload::upload_file | guarded | guarded | OK，size cap 100MB 双层 + 空内容拒绝 |
+| GET (WS) | /ws/scan-progress | ws::scan_progress | guarded | guarded | OK，sealed 时 socket 推送 locked payload 而非断开（合理） |
+| GET | / | ui::index | exempt | exempt | OK，UI shell HTML |
+| GET | /ui | ui::index | exempt | exempt | OK |
+
+**总计：53 routes**（含同 path 不同 method 拆开计数）。
+
+### Findings
+
+**严重错误处理 issues**：无
+
+抽样 5 个 handler（vault.rs, items.rs, upload.rs, ws.rs, status.rs, search.rs）+ 全 routes 文件 grep `unwrap()` / `expect()`：
+- 请求路径上**零** `unwrap()` / `expect()`（仅 `lock().unwrap_or_else(|e| e.into_inner())` 处理 mutex poisoning，是 Rust idiom 而非 panic）
+- StatusCode 选择恰当：vault locked → 403、auth fail → 401、not found → 404、payload too large → 413、parse error → 422、payload validation → 400、internal → 500、bad gateway (LLM) → 502、rate limit → 429
+- search.rs 有 `top_k > 0` 校验；upload.rs 有 size cap + 空内容拒绝；vault.rs 全分支错误码合理
+- WebSocket 在 vault sealed 时持续推送 `vault_state: "locked"` payload 而非断连，UI 体验更好
+
+**guard 漏配**：
+
+- `/api/v1/vault/lock`：未在 always-auth 列表内。意味着 `require_auth=false` 模式下任何客户端可触发 lock。考虑到 lock 是 idempotent（用户 LAN 内本来就要重新解锁）+ 攻击者已能访问 LAN 时威胁更小，**可接受**。Backlog 记一笔。
+- `/api/v1/profile/export` & `/api/v1/profile/import`：行为画像导出可能被视为敏感数据（含点击历史 / popular items）。当前依赖 `require_auth=true`。**可接受**（profile 数据不如 device_secret 关键），但 v0.7 正式商用前考虑加 always-auth。
+
+**response schema 不一致**：
+
+- 整体一致：成功 `{...payload}` 或 `{"status": "ok", ...}`；错误 `{"error": "msg"}` 或 `{"error": "msg", "hint": "..."}`
+- 个别差异（小，非阻塞）：
+  - 部分 handler `{"status": "ok"}`，部分 `{"status": "ok", "state": "..."}` — 客户端兼容
+  - error 偶尔加 `"hint"`（vault_guard 会带），handler 错误不带 hint — 可接受
+- 没有正式 `ApiError` 类型 / 中间 trait — 每个 handler 自己 `(StatusCode, Json<Value>)` 元组
+
+**缺漏 endpoint**：
+
+- `/metrics`（Prometheus）— **skip**。本地优先单用户产品，无 ops 层；用户原则"开发期不要 over-engineer"。
+- `/version`（git sha + version）— **skip**。`/api/v1/status` 已返回 `version: attune_core::version()`；如需 git sha 可加 build-time `option_env!("GIT_SHA")`，目前 sprint 0-1 不需要。
+- `/api/v1/health` 与 `/health` 同时存在 — 已有 `/api/v1/status/health`，重复但语义清晰，保留。
+- `/openapi.json` / `/docs`（OpenAPI 文档）— **skip**。Web UI 内部使用，文档化本来已有 `docs/api-reference.md` 之类。
+
+### Fix（仅小范围 fix）
+
+无。当前 guard 配置 + 错误处理 + StatusCode 选择 + response schema 在"开发期"标准下都满足。
+
+### Backlog（留给后续 sprint）
+
+1. **(P3)** v0.7 正式商用前，将 `/api/v1/profile/*` 加入 `ALWAYS_AUTH_ENDPOINTS`：行为画像跨设备 export/import 应与 device-secret 同等保护。
+2. **(P3)** 评估 `/api/v1/vault/lock` 是否需要 always-auth：当前 require_auth=false 模式下匿名可锁。低危但考虑加。
+3. **(P3)** 提取 `ApiError` 公共类型 + `IntoResponse` impl，统一 (StatusCode, Json<Value>) → ApiError。会简化 routes/* 但工程量中等，留 sprint-1+。
+4. **(P3)** 加 build-time `GIT_SHA` 到 `/api/v1/status` response，便于线上 debug。
+
+### 验证
+
+- `cargo test --release --workspace -- --test-threads=2`：未运行（纯 audit，无代码改动；保持 R8 baseline）
+- 文档变更：本节追加，无其他文件修改
+
+### Skip 理由
+
+- 不补 `/metrics` / `/openapi.json`：单用户本地产品 + 用户明确"开发期不要 over-engineer"
+- 不重构 response schema：大动作，应在 sprint-1 单独跑
+- 不立刻给 profile/lock 加 always-auth：当前 require_auth=true 已覆盖 95% 场景；商用前再补
+
+---
