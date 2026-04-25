@@ -194,3 +194,110 @@
 - Post: 377 passed, 0 failed
 
 ---
+
+## R5 — 文件粒度 audit（不动代码，仅审查）
+
+**Status**: DONE (audit-only)
+**Commit**: <将由 docs commit 生成>
+
+### 全工作区文件大小分布（top 5 / 区域）
+
+**rust/crates/attune-core/src/**（24 files，12 661 行总）
+| 行数 | 文件 |
+|------|------|
+| 2403 | `store.rs` |
+| 628 | `ai_annotator.rs` |
+| 594 | `vault.rs` |
+| 561 | `search.rs` |
+| 539 | `platform.rs` |
+
+**rust/crates/attune-server/src/**（19 files，4 629 行总）
+| 行数 | 文件 |
+|------|------|
+| 789 | `state.rs` |
+| 626 | `routes/chat.rs` |
+| 369 | `routes/annotations.rs` |
+| 216 | `lib.rs` |
+| 202 | `routes/index.rs` |
+
+**rust/crates/attune-cli/src/**：`main.rs` 117 行（单文件）
+
+**apps/attune-desktop/src/**（3 files，221 行总）：`main.rs` 121 / `embedded_server.rs` 57 / `tray.rs` 43
+
+### 大文件判定（>= 800 行阈值）
+
+| 文件 | 行数 | pub fn / struct / impl | 测试占比 | 判定 | 原因 | 建议 sprint |
+|------|------|------------------------|----------|------|------|-------------|
+| `attune-core/src/store.rs` | **2403** | 61 / 16 / 5 impl + 5 test mod | **~35%** (847 行 cfg test) | **A. 拆分推荐** | 单文件覆盖 9 个独立逻辑域（meta / items / dirs / queue / search_history / conversations / signals / chunk_summaries / annotations），明确 `// --- 分隔符` 已勾画好边界；35% 是测试，集中在末尾 5 个 cfg(test) mod，可直接迁出 | Sprint 2（待定） |
+
+**接近阈值但暂不拆**（行数 + 内聚度足够，列表仅供监控）：
+- `attune-server/src/state.rs` (789) — 11 行差阈值，单一 `AppState` + 启动装配，内聚（B. 保持现状）
+- `attune-core/src/ai_annotator.rs` (628) — 单 trait + 5 pub fn，内聚（B. 保持现状）
+- `attune-server/src/routes/chat.rs` (626) — 单一 chat 路由 handler 链，内聚（B. 保持现状）
+- `attune-core/src/vault.rs` (594) — vault 解锁/锁定/换密码核心，内聚（B. 保持现状）
+- `attune-core/src/search.rs` (561) — 混合搜索核心，内聚（B. 保持现状）
+- `attune-core/src/platform.rs` (539) — 平台/硬件检测，内聚（B. 保持现状）
+
+### 推荐拆分（具体设计）
+
+**仅 store.rs** — 当前结构已用 `// --- vault_meta ---` / `// --- items ---` 等分隔符自描述边界，文件内 5 个 `impl Store` 块 + 5 个 cfg(test) mod 形成天然切片。建议拆为：
+
+```
+attune-core/src/store/
+├── mod.rs                  ~200 行  Store struct + open/checkpoint + SCHEMA SQL 常量 + 公共 import
+├── meta.rs                 ~120 行  set_meta / get_meta / has_meta / token_nonce / set_meta_batch
+├── items.rs                ~280 行  insert/get/list/list_stale/get_stats/update/delete/find_by_url/item_count + insert_feedback/set_updated_at
+├── dirs.rs                 ~100 行  bind_directory / unbind_directory / list_bound_directories / update_dir_last_scan / get_indexed_file / upsert_indexed_file
+├── queue.rs                ~150 行  enqueue_embedding / dequeue_embeddings / mark_done / mark_failed / pending_count / pending_count_by_type / enqueue_classify / mark_task_pending
+├── tags.rs                 ~50 行   update_tags / get_tags_json / list_all_item_ids
+├── history.rs              ~120 行  log_search / recent_searches / log_click / popular_items
+├── conversations.rs        ~180 行  create_conversation / list / get_messages / append_message / append_turn / delete / get_by_id
+├── signals.rs              ~80 行   record_skill_signal / count_unprocessed / get_unprocessed / mark_processed
+├── chunk_summaries.rs      ~80 行   get_chunk_summary / put_chunk_summary / chunk_summary_count
+├── annotations.rs          ~150 行  create / list / update / delete / count
+├── types.rs                ~150 行  全部 16 个 pub struct（DecryptedItem, ItemSummary, ..., AnnotationInput）+ RawItem impl
+└── tests/                  ~850 行  现有 5 个 cfg(test) mod，按主题分文件（store_tests.rs / annotation_tests.rs / queue_tests.rs / signals_tests.rs / chunk_summary_tests.rs）
+```
+
+**关键约束**：
+- 各子模块都是 `impl Store` 的扩展（同一 type、不同方法集）— Rust 允许跨文件分裂 inherent impl，无需 trait 化重构
+- `SCHEMA` 常量留在 `mod.rs` 顶层（单一真相源，schema 是整体的）
+- `Connection` 字段保持私有，所有子模块通过 `&self` / `&mut self` 复用
+- 子模块 import 路径 `use crate::store::types::{ItemSummary, ...}`；外部调用方 `use attune_core::store::Store` 不变
+
+**收益估计**：单文件 2403 → 拆后最大 ~280 行；vim/编辑器加载快；新人定位"批注 CRUD 在哪"无需在 2403 行里搜
+**风险**：拆分时如果 misclassify 一两个 fn 的分组，编译会立刻报错 — 风险低但需谨慎。属于"高 churn / 低 risk-per-line" 任务，建议在没有并行 feature work 的 sprint 单独承担。
+
+### 推荐合并（如有）
+
+**未发现明确合并候选**。< 100 行的小文件均符合"路由 = 一文件"或"trait/error = 一文件"约定：
+
+- `routes/ui.rs` (13) / `routes/mod.rs` (23) / `routes/feedback.rs` (42) / `routes/plugins.rs` (46) / `routes/tags.rs` (48) / `routes/ws.rs` (62) / `routes/behavior.rs` (73) / `routes/remote.rs` (86) / `routes/chat_sessions.rs` (90) — 都遵循 axum "一路由一文件" 模式，跨文件合并会破坏路由结构，不推荐
+- `infer/provider.rs` (37) / `infer/mod.rs` (67) — infer 子模块的 trait + 默认实现，已合理
+- `error.rs` (82) — error 类型集中，不要散
+- `lib.rs` (36) — 仅 crate root re-export
+
+**结论：保持现状**。
+
+### 留给后续 sprint 的具体动作
+
+- **Sprint 2 候选**：拆 `attune-core/src/store.rs` → `store/{mod,meta,items,dirs,queue,tags,history,conversations,signals,chunk_summaries,annotations,types}.rs` + `store/tests/{...}.rs`
+  - 前置依赖：Sprint 0/0.5/1 已稳定，无大批量 feature 改动并发
+  - 任务规模估算：~1 天（1 人）— 主要是机械搬运 + 跑测试 + 改 import
+  - 测试约束：拆完后 `cargo test -p attune-core` 必须 0 回归（当前 ~210 tests）
+  - 监控其它接近阈值的文件（state.rs / ai_annotator.rs / chat.rs / vault.rs）— 任意一个突破 1000 行时再开 audit
+
+- **持续监控**：在后续 cleanup 轮（每季度）重跑 Step 1 大小扫描，发现新越线文件即评估
+
+### 不动代码原因
+
+拆 `store.rs` 涉及：
+1. 12 个新建 `.rs` 文件 + module tree 重组（`pub mod meta; pub mod items; ...`）
+2. 5 个 `impl Store` 块跨文件分裂（Rust 支持但会扰动 git blame）
+3. 16 个 pub struct 迁移 + 全 workspace 的 `use` 路径更新（`store::DecryptedItem` 通过 re-export 维持，仍需小心）
+4. 5 个 cfg(test) mod 迁出 + test fixture 复制
+5. ~847 行测试代码搬家，跑通整个 `cargo test` 验证
+
+Sprint 0（Tauri shell）/ Sprint 0.5（行业版定位）/ Sprint 1（进行中）三阶段都直接依赖现有 `Store` API，**改动风险 > 立刻收益**。R5 仅留 backlog，由具体 sprint 在闲档期携带 task 一起做（拆完顺手测）。
+
+---
