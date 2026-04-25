@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod embedded_server;
+mod tray;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -44,6 +45,22 @@ fn main() {
                         .build()
                         {
                             tracing::error!("failed to build main window: {e}");
+                        }
+
+                        // 关闭按钮 = 隐藏到托盘，不退出进程
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let win_clone = window.clone();
+                            window.on_window_event(move |event| {
+                                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                                    api.prevent_close();
+                                    let _ = win_clone.hide();
+                                }
+                            });
+                        }
+
+                        // 系统托盘
+                        if let Err(e) = crate::tray::build(&app_handle) {
+                            tracing::error!("failed to build system tray: {e}");
                         }
                     }
                     Err(e) => {
