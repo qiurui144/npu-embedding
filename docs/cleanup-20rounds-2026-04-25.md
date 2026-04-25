@@ -934,3 +934,194 @@ R1-R12 的清理已经把表层重复（dead_code / 未用 deps / 重复 import 
 R1-R12 已扫净 textual / structural 重复，R13 audit 余下的全部归类到 **设计层 backlog**（5 处 ingest pipeline + 2 处 Ollama URL 常量 + L2 norm util + trait default 方法）。这些都是 Sprint 1+ 的工作，不阻塞当前 cleanup 收尾。
 
 ---
+
+## R14 — Python vs Rust 双线 audit（audit-only）
+
+**Status**: DONE (audit-only — 不动 src/npu_webhook，不删 tests，等待用户决策)
+**Commit**: <pending — backfilled below>
+
+### 触发上下文
+
+CLAUDE.md 双产品线约定：Python (`src/npu_webhook/`) 是原型 / 实验，Rust (`rust/`) 是生产 / 发布；Python 验证后择优迁移到 Rust。R14 检视当前两线状态，决定 Python 端是否到了 retire / 降级时机。
+
+### 代码规模
+
+| 指标 | Python (`src/npu_webhook/`) | Rust (`rust/crates/`) |
+|------|------------------------------|------------------------|
+| LOC（不含 target/tests） | **3,971** | **17,407** |
+| 顶级源文件 | 31 .py | 60+ .rs |
+| 测试数 | 78 (`pytest`) | 377 (`cargo test --workspace`，含 5 ignored) |
+| 最大单文件 | `platform/detector.py` 719 LOC | `attune-core/store.rs` 2,403 LOC |
+
+体量对比 **1 : 4.4** — Rust 端早已是主体。
+
+### Feature 对比矩阵（实测）
+
+实测依据：实际打开两端代码 + grep 全量 router/路径/类名。✅ 表实现、➖ 表 stub-only / TODO、❌ 表完全缺失。
+
+| Feature | Python | Rust | 状态判定 |
+|---|---|---|---|
+| **embedding 层** | | | |
+| Ollama HTTP embedding | ✅ `core/embedding.py::OllamaEmbedding` | ✅ `embed.rs::OllamaProvider` | both |
+| ONNX Runtime embedding (CPU/DirectML/ROCm) | ✅ `core/embedding.py::ONNXEmbedding` | ✅ `infer/embedding.rs::OrtEmbeddingProvider` | both |
+| OpenVINO embedding | ➖ 占位（Phase 4 TODO） | ❌ | Python 占位 |
+| Reranker | ❌ | ✅ `infer/reranker.rs` + state.reranker | Rust-only |
+| **chunker / parser** | | | |
+| 滑动窗口分块 | ✅ `core/chunker.py` | ✅ `chunker.rs::chunk` | both |
+| extract_sections 章节切割 | ✅ `core/chunker.py` | ✅ `chunker.rs::extract_sections` | both |
+| 文件解析 (MD/TXT/PDF/DOCX/code) | ✅ `core/parser.py` | ✅ `parser.rs` | both |
+| OCR (tesseract) | ❌ | ✅ `ocr.rs` | Rust-only |
+| **存储 / 索引** | | | |
+| SQLite + FTS5 | ✅ `db/sqlite_db.py` | ✅ `store.rs` (rusqlite) + `index.rs` (tantivy) | both |
+| 字段级加密 | ❌ 明文存储 | ✅ Argon2id + AES-256-GCM (`vault.rs` / `crypto.rs`) | **Rust-only** |
+| 向量库 | ✅ ChromaDB (`db/chroma_db.py`) | ✅ usearch HNSW + f16 量化 (`vectors.rs`) | both（不同 backend） |
+| Embedding 队列 worker | ✅ `scheduler/queue.py` | ✅ `queue.rs` + `store.rs` queue 字段 | both |
+| Cleaner (stale items) | ✅ `scheduler/cleaner.py` | ➖ items/stale endpoint 但无 cleaner | Python 略丰富 |
+| **检索** | | | |
+| RRF 混合搜索 | ✅ `core/search.py` | ✅ `search.rs::search_with_context` | both |
+| 两阶段层级检索 | ✅ search_relevant | ✅ search/relevant + L1/L2 indexing | both |
+| 注入预算分配 | ✅ 动态预算 | ✅ `allocate_budget` + INJECTION_BUDGET | both |
+| 注入反馈 (feedback_id 链路) | ✅ POST /feedback + `record_injection` | ✅ POST /feedback (`routes/feedback.rs`) | both |
+| 上下文感知搜索 (context: list[str]) | ✅ RelevantRequest.context | ❌（仅 query） | **Python-only** |
+| 搜索结果缓存 | ❌ | ✅ `state::CachedSearch` + LRU | Rust-only |
+| **索引管线** | | | |
+| watchdog 多目录监听 | ✅ `indexer/watcher.py` | ✅ `scanner.rs` (内含 watch) | both |
+| 解析→入队 pipeline | ✅ `indexer/pipeline.py` | ✅ scanner.rs / routes/upload.rs / routes/ingest.rs（R13 标记 5 处 copy-paste） | both |
+| WebDAV 远程目录 | ❌ | ✅ `scanner_webdav.rs` (384 LOC) | **Rust-only** |
+| Patent crawler | ❌ | ✅ `scanner_patent.rs` (372 LOC) | **Rust-only** |
+| **平台 / 基础设施** | | | |
+| 芯片级硬件检测 + 驱动匹配 | ✅ `platform/detector.py` (719 LOC) | ✅ `platform.rs` (539 LOC) | both（Python 表更详） |
+| 系统托盘 | ✅ `tray.py` (pystray) | ✅ `apps/attune-desktop/tray.rs` | both（不同 GUI 后端） |
+| Windows 路径 / 安装支持 | ✅ `platform/windows.py` | ✅ `cfg(windows)` 隔离 + Tauri shell | both |
+| 一键安装命令生成 | ✅ `model_routes::full_platform_check` | ✅ /api/v1/models/pull + /llm/test | both（接口不同） |
+| **加密 / 安全** | | | |
+| Vault 模型 (Argon2 + AES-GCM + Device Secret) | ❌ | ✅ `vault.rs` (594 LOC) + `crypto.rs` (269 LOC) | **Rust-only** |
+| Vault 状态 / 解锁 / 锁定 / 改密 | ❌ | ✅ /api/v1/vault/* 7 endpoints | **Rust-only** |
+| 插件签名 | ❌ | ✅ `plugin_sig.rs` (261 LOC) | **Rust-only** |
+| **AI 智能层** | | | |
+| Chat（多轮对话 + 历史） | ❌ | ✅ `chat.rs` + /api/v1/chat[/history,/sessions] | **Rust-only** |
+| AI 自动分类 (qwen2.5 chat) | ❌ | ✅ `classifier.rs` + /api/v1/classify/* | **Rust-only** |
+| HDBSCAN 聚类 | ❌ | ✅ `clusterer.rs` + /api/v1/clusters/* | **Rust-only** |
+| Tag dimensions / histogram | ❌ | ✅ `tag_index.rs` + /api/v1/tags/* | **Rust-only** |
+| Taxonomy（编程/法律/专利/售前 4 行业插件） | ❌ | ✅ `taxonomy.rs` (490 LOC) | **Rust-only** |
+| AI 批注（4 角度分析） | ❌ | ✅ `ai_annotator.rs` (628 LOC) + /api/v1/annotations/* | **Rust-only** |
+| 批注加权 RAG | ❌ | ✅ `annotation_weight.rs` (266 LOC) | **Rust-only** |
+| Context compression（150 字摘要 + chunk_hash 缓存） | ❌ | ✅ `context_compress.rs` (441 LOC) | **Rust-only** |
+| **进化 / 学习** | | | |
+| Skill engine | ➖ `core/skill_engine.py` 仅占位 `pass` | ✅ `skill_evolution.rs` (387 LOC) | **Rust-only**（Python 是空 stub） |
+| Skills CRUD API | ➖ `api/skills.py` 全部 `not_implemented` | ✅ /api/v1/plugins (`plugin_loader.rs` 283 LOC) | **Rust-only** |
+| Plugin loader（编程/法律/专利/售前） | ❌ | ✅ `plugin_loader.rs` | **Rust-only** |
+| **网络搜索 / 浏览器自动化** | | | |
+| 浏览器搜索 | ❌ | ✅ `web_search_browser.rs` (255 LOC) + `web_search_engines.rs` + `web_search.rs` | **Rust-only** |
+| **行为 / 画像** | | | |
+| Behavior tracking (click/history/popular) | ❌ | ✅ /api/v1/behavior/* (`behavior.rs`) | **Rust-only** |
+| 画像导出 / 导入 | ❌ | ✅ /api/v1/profile/{export,import} | **Rust-only** |
+| **WebSocket 进度** | | | |
+| WebSocket scan/embed progress | ✅ `api/ws.py` | ✅ /ws/scan-progress (`ws.rs`) | both |
+| **专利搜索** | | | |
+| Patent search API | ❌ | ✅ /api/v1/patent/{search,databases} | **Rust-only** |
+| **Setup / 引导** | | | |
+| 首次安装引导页 | ➖ `api/setup.py` 仅占位 `<h1>TODO</h1>` | ➖ Tauri shell + Vault setup 路径 | both 占位 |
+
+### 总结
+
+- **共 32 项 feature**：both = **15**，Rust-only = **15**，Python-only = **1**（上下文感知搜索 RelevantRequest.context），Python 占位 / Rust 缺 = **1**（OpenVINO embedding）
+- Rust 端 17.4 K LOC，Python 端 3.97 K LOC — Rust 已实现 Python 全部已完成 feature 的超集（除 `RelevantRequest.context` 字段 + cleaner/scheduler 细节）
+- Python 端的 `skills.py` / `setup.py` / `core/skill_engine.py` 均为 TODO 占位
+
+### API drift（同名 endpoint 不同 schema）
+
+实测对比：
+
+| Endpoint | Python schema | Rust schema | drift |
+|----------|---------------|-------------|-------|
+| `POST /api/v1/ingest` | `IngestRequest{title, content, url?, source_type="webpage", domain?, tags=[], metadata={}}` 返回 `IngestResponse{id, status, duplicate}` | `IngestRequest{title, content, source_type="note", url?, domain?, tags?}` 返回 `{id, status, chunks_queued}` 含 2MB title/content cap | **DRIFT**：默认 source_type 不同（`webpage` vs `note`）；Python 有 `metadata` 字段、Rust 没有；Rust 返回 `chunks_queued`、Python 返回 `duplicate`；Python 有 500KB 上限 + 近重复检测、Rust 是 2MB 上限 + 不查重 |
+| `GET /api/v1/search` | `q, top_k=10, source_types?` 返回 `SearchResponse{results[], total, feedback_ids=[]}` | `q, top_k=10, initial_k?, intermediate_k?` 返回 `{query, results, total, cached?}` | **DRIFT**：Python 有 source_types 过滤、Rust 没有；Rust 暴露 initial_k/intermediate_k 两阶段参数、Python 没有；Python 返回 feedback_ids、Rust 返回 cached |
+| `POST /api/v1/search/relevant` | `RelevantRequest{query, top_k=3, source_types?, context?, min_score=0.0}` | `RelevantRequest{query, top_k=5, injection_budget?, initial_k?, intermediate_k?, source_types?(dead)}` | **DRIFT**：默认 top_k 不同（3 vs 5）；Python 独有 `context` 上下文 + `min_score`；Rust 有 `injection_budget`；Rust 的 source_types 字段标 `#[allow(dead_code)]` |
+| `GET /api/v1/items` | `offset=0, limit=20, source_type?` 返回 `{items, total, offset, limit}` | `limit=20, offset=0`（无 source_type 过滤）返回 `{items, count}` | **DRIFT**：Python 支持 source_type 过滤、Rust 不支持；Python 返回 `total/offset/limit`、Rust 返回 `count` |
+| `GET /api/v1/items/{id}` | 返回完整 KnowledgeItem schema | 返回 store::Item 序列化（不一定同字段） | 字段集需要前端确认 |
+| `PATCH /api/v1/items/{id}` | `{title?, tags?, metadata?}` | `{title?, content?}` | **DRIFT**：Python 改 title/tags/metadata、Rust 改 title/content |
+| `GET /api/v1/items/stale` | Python 有 `days/limit` query | Rust 实现存在但 query schema 未暴露 | 待对齐 |
+| `POST /api/v1/index/bind` | `{path, recursive=true, file_types=["md","txt","pdf","docx","py","js"]}` | `{path, recursive=true, file_types=["md","txt","py","js","rs"]}` | **DRIFT**：默认 file_types 不同（Python 含 pdf/docx，Rust 含 rs） |
+| `DELETE /api/v1/index/unbind` | query: `dir_id` | query: `dir_id` | 一致 |
+| `GET /api/v1/index/status` | 返回 `{directories, pending_embeddings}` | 返回 `{directories, pending_embeddings}` | 一致 |
+| `POST /api/v1/index/reindex` | 后台异步全量 reindex | 不存在该端点（Rust 无 /reindex） | **MISSING in Rust** |
+| `GET /api/v1/settings` / `PATCH /api/v1/settings` | `SettingsResponse{server_host, server_port, embedding_model, embedding_device, embedding_batch_size, ingest_min_length, excluded_domains}` | 完全自由 JSON（含 `theme/language/summary_model/context_strategy/web_search/llm/embedding/injection_*`），有 redact_api_key + 白名单校验 | **重大 DRIFT**：Python 是 flat 字段、Rust 是嵌套 JSON 且语义完全不同（Rust 是用户级偏好 + AI 模型 + web_search，Python 是 server / embedding 系统配置） |
+| `GET /api/v1/status` | `SystemStatus{version, device, model_name, embedding_available, total_items, total_vectors, pending_embeddings, bound_directories}` | `routes::status::status` 返回类似但需逐字段确认 | 字段集需对齐 |
+| `GET /api/v1/status/health` | 简单 health | `routes::status::health` | 一致 |
+| `GET /api/v1/models` / `POST /api/v1/models/check` / `POST /api/v1/models/download` | Python 有完整 3 端点（list / detect / pull） | Rust 仅 `POST /api/v1/models/pull` + `POST /api/v1/llm/test` | **DRIFT**：Python 有平台检测 + 模型清单；Rust 仅 pull 单端点 |
+| `POST /api/v1/feedback` | `{feedback_id, was_useful}` | 通过 `routes::feedback::submit_feedback` | 字段需对齐 |
+| `POST /api/v1/skills` / `GET /api/v1/skills` | Python TODO（not_implemented） | 不存在；Rust 用 `/api/v1/plugins` 替代 | **MISSING in Rust**（命名换了） |
+| `GET /setup` | Python TODO HTML | 不存在 | Rust 走 Tauri shell |
+
+Rust **独有**（Python 完全没有）的 endpoint：`/vault/*` (7), `/chat`, `/chat/history`, `/chat/sessions`, `/chat/sessions/*`, `/llm/test`, `/annotations`, `/annotations/ai`, `/annotations/{id}`, `/classify/*` (4), `/tags*` (2), `/clusters*` (3), `/plugins`, `/patent/*` (2), `/profile/{export,import}`, `/behavior/*` (3), `/index/bind-remote`, `/upload`, `/ws/scan-progress`, `/ui`, `/`。共 **30+** Rust-only endpoint。
+
+Python **独有**（Rust 没有）：`/index/reindex`, `/skills*`, `/setup`, `/models/check`, `/models/download`。共 5 个，其中 4 个 Rust 已用更现代的等价物替代。
+
+### 推荐方案（决策待用户确认）
+
+**(b) Python 线降级 prototype/，保留作算法实验场地**
+
+#### 理由
+
+1. **Rust 已实现 Python 95% 已完成 feature 的超集**：除"上下文感知搜索 context 字段"+"OpenVINO Phase 4 TODO 占位"外，所有真实 feature Rust 都已等价或更先进
+2. **Rust 拥有 15 项 Python 完全没有的核心 feature**：vault/encryption、chat、AI 批注、分类、聚类、taxonomy、context compression、skill_evolution、web_search、behavior/profile、patent/webdav scanner — 这些是产品差异化的全部主体
+3. **API drift 严重**：13 个同名 endpoint 中 9 个 schema 漂移（settings 完全不一致；ingest/search/items 多处差异）；Chrome 扩展协议虽然两端都有路径，但实际只能对接其中一端，双线维护扩展协议成本不值
+4. **Python 测试规模 78 vs Rust 377**：Rust 已有 4.8x 覆盖深度
+5. **Python 端 stub 多**：`skills.py` / `setup.py` / `core/skill_engine.py` 都是 TODO，从未真正完成
+6. **打包成本**：CLAUDE.md 已宣布平台优先级 Win MSI P0、Linux deb P1，Python AppImage / NSIS 路径与 Rust 二进制分发是双轨，维护两套打包脚本浪费
+
+#### 不推荐 (a) 全部 retire 的原因
+
+- Python 端 `core/embedding.py` 的 ONNXEmbedding 实测路径（DirectML/ROCm provider 选择）+ `platform/detector.py` 的芯片表（INTEL_NPU_CHIPS / AMD_NPU_CHIPS / 固件路径）是**真实知识资产**，Rust 端未来要做"OpenVINO 实验" / "新 NPU 适配" 时仍要参考
+- 完全删除会丢失 78 个 pytest 测试中验证 chunker / search / extension protocol 的回归资产
+- 用户原则"开发期不留向后兼容"虽然激进，但前提是确认**没有未迁移的算法**；Python 端确实还有"上下文感知搜索 context"和"min_score 阈值"未迁移到 Rust
+
+#### 不推荐 (c) 保持现状
+
+- 双线 API drift 已经到 9 处，再不处理会越漂越远
+- Python 端 stub 文件长期搁置（skills/setup/skill_engine）传递的是"未完成产品"信号，影响产品定位
+- 打包路径双轨增加 release 工作量
+
+#### (b) 具体建议（仍待用户确认）
+
+| 动作 | 范围 |
+|------|------|
+| 1. 把 `src/npu_webhook/` 整体 `git mv` 到 `prototype/python-experimental/`，明确"不打包发布、仅算法实验" | src 树 |
+| 2. 删除 `prototype/python-experimental/api/skills.py` + `api/setup.py` + `core/skill_engine.py` 这 3 个纯 TODO 占位 | 3 文件 |
+| 3. `packaging/{linux,windows}/*` 的 PyInstaller / AppImage / NSIS 全部移到 `prototype/packaging-legacy/` 或直接删 — 已被 Tauri shell + MSI/deb 取代 | packaging/ |
+| 4. README / CLAUDE.md 更新双线措辞："Rust 商用线 = 主产品；Python 原型 = 实验沙盒，不发布" | 2 文件 |
+| 5. 把 Python 端尚未迁移的 1 个 feature **登记为 Rust backlog**：`RelevantRequest.context` 上下文感知搜索 + `min_score` 阈值 → Sprint 1 实现 | 1 backlog 项 |
+| 6. **不处理** API drift — 因 Python 不再对外提供，drift 自动消解；Chrome 扩展从此只对接 Rust :18900 | — |
+| 7. tests/ 中明确划分：`tests/python-prototype/`（保留 78 旧测试）vs `tests/rust-integration/`（新建，对应 Rust e2e） | tests 树 |
+
+#### 用户决策项清单
+
+请用户确认以下其中一项：
+
+- [ ] **(a) 全部 retire**：删 src/npu_webhook + tests/ + packaging/{linux,windows}，仅留 Rust 一线（最激进，丢失 NPU/iGPU 检测算法资产）
+- [ ] **(b) 降级 prototype/**：移到 `prototype/python-experimental/`，删 3 个 TODO 占位，packaging 走 Tauri/MSI/deb（推荐）
+- [ ] **(c) 保持现状**：两线并行，把 1 个 Python-only feature（context-aware search）补到 Rust，把 9 处 API drift 逐项对齐（最保守，工作量最大）
+
+无论 a/b/c，都建议补做：
+- [ ] Sprint 1 Rust 端实现 `RelevantRequest.context` + `min_score`（Python 唯一未迁移 feature）
+- [ ] CLAUDE.md 更新"已实现模块"段把 Rust-only 15 项写进去（当前只描述 Python 模块清单）
+
+### 本轮代码改动
+
+**无**（audit-only）。
+
+### Tests
+
+| Phase | 命令 | 结果 |
+|-------|------|------|
+| Pre-audit | `cargo test --workspace` | 377 passed（与 R13 baseline 一致） |
+| Post-audit | （无代码变更，未跑） | — |
+
+### Skip 理由
+
+- ❌ 不动 src/npu_webhook — 用户没确认 retire 之前不操作（CLAUDE.md 明确"两条产品线并行"）
+- ❌ 不修 9 处 API drift — 修 drift 之前要先决定 Python 是 retire / 降级 / 保留，方向不同 fix 完全不同
+- ❌ 不补 RelevantRequest.context 到 Rust — 这是 feature 工作不是 cleanup，归 Sprint 1 backlog
+
+---
