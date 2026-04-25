@@ -881,3 +881,56 @@ fn which_bin(name: &str) -> Option<String> {
 - ❌ 不重写 ocr.rs / parser.rs 跨平台逻辑 — 静态分析未发现其他缺陷，过度重写引入新 bug 风险高于收益
 
 ---
+
+## R13 — 重复 / 等价 / copy-paste 逻辑 audit
+
+**Status**: DONE
+**Commit**: <pending — backfilled below>
+
+### 候选清单 + 真伪判定
+
+| 候选重复 | finding | 真伪 | 决策 |
+|---|---|---|---|
+| `embed.rs::EmbeddingProvider` vs `infer/embedding.rs::OrtEmbeddingProvider` | embed.rs 定义 trait + Ollama HTTP impl；infer/embedding.rs 是 ORT 本地推理 impl，二者通过同一 trait 协作（infer 文件 `impl EmbeddingProvider for OrtEmbeddingProvider`） | **否** | skip — 教科书式 strategy pattern |
+| `web_search.rs` / `web_search_browser.rs` / `web_search_engines.rs` | web_search 是 trait + factory；web_search_browser 是 BrowserSearchProvider impl；web_search_engines 是 SearchEngineStrategy（DOM 解析子策略）。三层切得很干净 | **否** | skip — 已经是 R5 file-granularity 审过的健康分层 |
+| `scanner.rs` / `scanner_webdav.rs` / `scanner_patent.rs` | 命名同前缀但语义完全不同：本地遍历 + watch / WebDAV PROPFIND / USPTO REST API。共享 `chunker + store + parser`，各自有独立工作流 | **否**（trait 抽象层面） | skip |
+| `cosine_similarity` (search.rs:174) vs `mean pooling L2 norm` (infer/embedding.rs:134) | 两处都有 `.iter().map(\|x\| x*x).sum::<f32>().sqrt()`，但 search.rs 是 cosine 公式 inline、infer 是 in-place L2-normalize，语义/契约不同 | 部分 | skip — 抽 utility 反而引入 import 噪声 + 测试需平行迁移，4 行 inline 数学不值得 |
+| 三处 hash：`vault.rs::sha2_hash` (sha256→bytes) / `context_compress.rs::chunk_hash` (sha256→hex) / `routes/search.rs::hash_query` (djb2→u64) | 算法不同（SHA256 vs djb2）+ 输出类型不同（bytes/hex/u64）+ 用途不同（HMAC payload / cache key / cache shard）  | **否** | skip |
+| `localhost:11434` 字面量在 embed.rs 默认 + llm.rs 默认 + 文档示例 | 2 处真实 prod 使用，含义都是 "Ollama 默认 base url"。各 provider 持有自己的 default 是当前设计（每个 trait 独立配置） | 弱真 | backlog（Sprint 1 配置层重构时一起处理） |
+| `hash_query` (routes/search.rs:22) — Tantivy 缓存 key | 单 callsite，整个 server crate 唯一 djb2 实现 | **否**（无重复） | skip |
+| **L1+L2 enqueue_embedding pipeline**：scanner.rs:131-148 / scanner_webdav.rs:288-298 / scanner_patent.rs:181-184（简化版） / routes/upload.rs:99-127 / routes/ingest.rs:88-110 | 5 处近乎逐行 copy-paste：`extract_sections` → 遍历 sections enqueue level 1 → 遍历 sections::chunk 内层 enqueue level 2 → enqueue_classify。差异仅在错误处理风格（`?` / `tracing::warn!` / `map_err`）和参数细节（dir-id / level / kind） | **真重复** | **backlog**（影响 5 文件，错误处理风格不同，抽 helper 需要决定统一策略；不属于 R13 "< 50 行" 安全范围） |
+
+### Fix（本轮）
+
+无。R13 audit 未发现 < 50 行影响范围的 safe-to-fix 真重复。最大候选（L1+L2 enqueue pipeline）影响 5 文件且错误风格不一，超出 R13 约束的「不重构 / < 50 行」边界，归 backlog。
+
+R1-R12 的清理已经把表层重复（dead_code / 未用 deps / 重复 import / 过期 TODO / 文件粒度 / 模块 visibility / workspace 一致性 / docs 重复）扫干净，R13 剩下的"重复"都是设计层 / 配置层动作。
+
+### Backlog（trait 重构 + 设计层动作）
+
+| Item | 说明 | 影响范围 | 推荐 sprint |
+|------|------|---------|-------------|
+| **抽出 `chunker::ingest_pipeline(store, dek, item_id, content) -> Result<usize>`** | 把 5 处 L1+L2 enqueue 收敛到 chunker 模块的 helper：内部按 `extract_sections` → L1 enqueue → L2 chunk+enqueue → enqueue_classify 顺序统一，并定义错误处理契约（推荐 `?` 传播，外层调用点决定 wrap 还是 log）。需要先决策"WebDAV/upload/ingest/scanner 的 ingest_classify 时序是否统一" | 5 文件 | Sprint 1（与 chunker / store transactional 改造一起） |
+| **统一 Ollama 默认 base url 常量** | `embed.rs::"http://localhost:11434"` + `llm.rs::"http://localhost:11434"` 提到 `attune-core::config::OLLAMA_DEFAULT_BASE_URL`，避免改默认端口需要 grep 多处 | 2 文件 | Sprint 1（配置层重构时） |
+| **L2 normalize utility** | `infer/embedding.rs::embed_one` mean pooling 末尾的 in-place L2 normalize 抽到 `math::l2_normalize_in_place(&mut [f32])`，未来 reranker/分类向量也可复用 | 1 文件（短期）→ 多文件（中期 reranker 集成） | 后置（R10 性能优化轮一并） |
+| **三个 EmbeddingProvider impl 的 dimensions/is_available 默认实现** | OrtEmbeddingProvider 和 OllamaProvider 都有 `dimensions(&self) -> usize { self.dims }` + `is_available(&self) -> bool { ... }`，可加 default impl 减重复 | 1 trait 文件 | 后置（trait 演进时） |
+
+### Tests
+
+| Phase | 命令 | 结果 |
+|-------|------|------|
+| Pre-audit | `cargo test --workspace` | **377 passed**, 0 failed |
+| Post-audit | （无代码变更） | **377 passed** |
+
+### Skip 理由
+
+- ❌ 不抽 ingest pipeline helper — 5 callsite + 错误处理风格分歧，违反 R13 约束（不重构 / < 50 行 / 不动 ≥ 5 文件）
+- ❌ 不抽 cosine/L2-norm utility — 4 行 inline 数学，抽出后引入跨模块 import 反而降低可读性
+- ❌ 不统一 Ollama base_url 常量 — 仅 2 处字面量，做这一处需要决策"是否提常量到 config 模块"，留给 Sprint 1 配置重构
+- ❌ 不动 trait 重构（EmbeddingProvider / LlmProvider 默认实现） — 设计层动作，影响所有 provider impl，超出 R13 范围
+
+### 结论
+
+R1-R12 已扫净 textual / structural 重复，R13 audit 余下的全部归类到 **设计层 backlog**（5 处 ingest pipeline + 2 处 Ollama URL 常量 + L2 norm util + trait default 方法）。这些都是 Sprint 1+ 的工作，不阻塞当前 cleanup 收尾。
+
+---
