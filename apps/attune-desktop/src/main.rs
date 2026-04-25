@@ -3,7 +3,7 @@
 mod embedded_server;
 mod tray;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -47,14 +47,33 @@ fn main() {
                             tracing::error!("failed to build main window: {e}");
                         }
 
-                        // 关闭按钮 = 隐藏到托盘，不退出进程
+                        // 主窗口事件处理：
+                        //   1. 关闭按钮 = 隐藏到托盘，不退出进程
+                        //   2. OS 级文件拖拽 → emit 'attune-file-drop' 给前端
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let win_clone = window.clone();
-                            window.on_window_event(move |event| {
-                                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            let app_for_drop = app_handle.clone();
+                            window.on_window_event(move |event| match event {
+                                tauri::WindowEvent::CloseRequested { api, .. } => {
                                     api.prevent_close();
                                     let _ = win_clone.hide();
                                 }
+                                tauri::WindowEvent::DragDrop(
+                                    tauri::DragDropEvent::Drop { paths, .. },
+                                ) => {
+                                    let payload: Vec<String> = paths
+                                        .iter()
+                                        .map(|p| p.to_string_lossy().into_owned())
+                                        .collect();
+                                    if let Err(e) =
+                                        app_for_drop.emit("attune-file-drop", &payload)
+                                    {
+                                        tracing::warn!(
+                                            "failed to emit attune-file-drop: {e}"
+                                        );
+                                    }
+                                }
+                                _ => {}
                             });
                         }
 
