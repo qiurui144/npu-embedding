@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn mock_chat_with_history() {
         let mock = MockLlmProvider::new("test");
-        mock.push_response("history reply".into());
+        mock.push_response("history reply");
         let messages = vec![
             ChatMessage::system("sys prompt"),
             ChatMessage::user("hello"),

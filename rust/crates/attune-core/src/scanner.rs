@@ -170,7 +170,7 @@ pub fn create_watcher() -> Result<(RecommendedWatcher, mpsc::Receiver<notify::Re
         },
         notify::Config::default().with_poll_interval(Duration::from_secs(2)),
     )
-    .map_err(|e| VaultError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
     Ok((watcher, rx))
 }
 
@@ -183,7 +183,7 @@ pub fn watch_directory(watcher: &mut RecommendedWatcher, path: &Path, recursive:
     };
     watcher
         .watch(path, mode)
-        .map_err(|e| VaultError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
     Ok(())
 }
 

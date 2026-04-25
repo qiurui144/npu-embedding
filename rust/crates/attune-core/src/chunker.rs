@@ -32,7 +32,7 @@ pub fn chunk(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
         if actual_end >= chars.len() {
             break;
         }
-        start = if actual_end > overlap { actual_end - overlap } else { 0 };
+        start = actual_end.saturating_sub(overlap);
         if start == 0 && !chunks.is_empty() {
             break; // 防止无限循环
         }
@@ -141,7 +141,7 @@ mod tests {
     fn chunk_with_chinese() {
         let text = "这是一段中文内容。".repeat(100);
         let chunks = chunk(&text, 512, 128);
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
         for c in &chunks {
             assert!(!c.is_empty());
         }

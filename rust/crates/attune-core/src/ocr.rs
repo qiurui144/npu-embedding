@@ -70,7 +70,7 @@ fn which_bin(name: &str) -> Option<String> {
 
 fn list_tesseract_languages(tesseract: &str) -> Result<Vec<String>> {
     let out = Command::new(tesseract).arg("--list-langs").output()
-        .map_err(|e| VaultError::Io(e))?;
+        .map_err(VaultError::Io)?;
     // tesseract 把语言列表写到 stderr，每行一个；首行是 "List of available languages..."
     let text = String::from_utf8_lossy(&out.stderr).to_string()
         + &String::from_utf8_lossy(&out.stdout);
@@ -94,7 +94,7 @@ fn list_tesseract_languages(tesseract: &str) -> Result<Vec<String>> {
 ///   - 每页失败不终止整个 OCR，记录 warn 继续（残缺文本比全失败好）
 pub fn ocr_pdf(backend: &OcrBackend, pdf_path: &Path) -> Result<String> {
     let tmp = tempfile::TempDir::new()
-        .map_err(|e| VaultError::Io(e))?;
+        .map_err(VaultError::Io)?;
     let prefix = tmp.path().join("page");
     let prefix_str = prefix.to_str()
         .ok_or_else(|| VaultError::Io(std::io::Error::new(
@@ -106,17 +106,16 @@ pub fn ocr_pdf(backend: &OcrBackend, pdf_path: &Path) -> Result<String> {
         .arg(pdf_path)
         .arg(prefix_str)
         .status()
-        .map_err(|e| VaultError::Io(e))?;
+        .map_err(VaultError::Io)?;
     if !status.success() {
-        return Err(VaultError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(VaultError::Io(std::io::Error::other(
             format!("pdftoppm failed: exit {}", status.code().unwrap_or(-1)),
         )));
     }
 
     // 2. 收集生成的 PNG（按文件名排序保页序）
     let mut pages: Vec<_> = std::fs::read_dir(tmp.path())
-        .map_err(|e| VaultError::Io(e))?
+        .map_err(VaultError::Io)?
         .filter_map(|r| r.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))

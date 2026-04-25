@@ -990,7 +990,7 @@ impl Store {
             None
         } else {
             Some(serde_json::to_string(citations)
-                .map_err(|e| VaultError::Json(e))?)
+                .map_err(VaultError::Json)?)
         };
         self.conn.execute(
             "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
@@ -1565,7 +1565,7 @@ mod tests {
     #[test]
     fn open_memory_creates_tables() {
         let store = Store::open_memory().unwrap();
-        assert!(store.has_meta("nonexistent").unwrap() == false);
+        assert!(!store.has_meta("nonexistent").unwrap());
     }
 
     #[test]
@@ -2276,7 +2276,7 @@ mod tests_annotations {
             [], |r| r.get(0),
         ).unwrap();
         // 密文不应包含明文
-        assert!(!enc.windows(secret.as_bytes().len()).any(|w| w == secret.as_bytes()),
+        assert!(!enc.windows(secret.len()).any(|w| w == secret.as_bytes()),
             "encrypted content must not contain plaintext");
         // 解密 list 回读应该还原
         let anns = store.list_annotations(&dek, &item_id).unwrap();

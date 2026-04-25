@@ -248,7 +248,7 @@ pub fn estimate_tokens(text: &str) -> usize {
     // 1.2 * cjk + 0.25 * ascii, round up
     // = (12 * cjk + 25/10 * ascii) / 10 简化为 (12 * cjk + ascii * 2.5) / 10
     // 为避免浮点：(cjk * 120 + ascii * 25 + 99) / 100
-    (cjk_chars * 120 + ascii_chars * 25 + 99) / 100
+    (cjk_chars * 120 + ascii_chars * 25).div_ceil(100)
 }
 
 #[cfg(test)]

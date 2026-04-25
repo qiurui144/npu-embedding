@@ -249,7 +249,7 @@ mod tests {
     fn chat_engine_with_empty_indices() {
         // ChatEngine with no fulltext/vector indices should still work
         let mock = Arc::new(MockLlmProvider::new("test"));
-        mock.push_response("LLM回答".into());
+        mock.push_response("LLM回答");
 
         let store = Arc::new(Mutex::new(Store::open_memory().unwrap()));
         let fulltext: Arc<Mutex<Option<FulltextIndex>>> = Arc::new(Mutex::new(None));

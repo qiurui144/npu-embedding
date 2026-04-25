@@ -24,6 +24,12 @@ pub struct QueueWorker {
     running: Arc<AtomicBool>,
 }
 
+impl Default for QueueWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueueWorker {
     pub fn new() -> Self {
         Self {
