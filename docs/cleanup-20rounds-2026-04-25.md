@@ -1129,7 +1129,7 @@ Python **独有**（Rust 没有）：`/index/reindex`, `/skills*`, `/setup`, `/m
 ## R16 — Schema 冗余 audit
 
 **Status**: DONE
-**Commit**: <填充>
+**Commit**: 503b744
 
 ### Schema 规模
 
