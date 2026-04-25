@@ -580,3 +580,19 @@ API:        GET /api/v1/items/<id> → {"error":"json error: invalid
 - 搜索召回：4/5 top-1、5/5 top-3
 - RAG Chat + 引用：本地优先，web fallback 需要时自动触发
 - 混合智能：本地命中不 fallback，本地空则 DuckDuckGo 自动补充
+
+## 2026-04-25 — desktop-release CI workflow created
+
+- File: .github/workflows/desktop-release.yml
+- 状态: 已 commit 到 feature/sprint-0-tauri-shell, 未 push
+- 触发条件: push tag `desktop-v*` 或 GitHub UI 手动 workflow_dispatch
+- 矩阵: ubuntu-22.04 (deb,appimage) × windows-latest (nsis,msi)
+- 验证 TODO（用户 push 后人工跑）:
+  - [ ] GitHub Actions UI: desktop-release → Run workflow → 看两个 runner 都 green
+  - [ ] 下载 attune-desktop-x86_64-pc-windows-msvc artifact
+  - [ ] Windows 11 测试机双击 Attune_0.6.0_x64-setup.exe（NSIS）安装
+  - [ ] 启动后 30 秒内出现 Attune 窗口
+  - [ ] 浏览器访问 http://127.0.0.1:18900 也能打开（双轨兼容）
+  - [ ] 拖文件到窗口看 alert 弹窗（Task 9 桥接）
+  - [ ] 重复双击 NSIS installer / 启动图标只激活已有窗口（Task 7 single-instance）
+  - [ ] 关闭主窗口最小化到托盘，托盘菜单"完全退出"才结束进程（Task 8）
