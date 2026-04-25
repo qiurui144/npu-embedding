@@ -14,8 +14,9 @@
 **与 lawcontrol 关系**：完全独立。不调 lawcontrol API、不复用其代码，可参考其 plugin / RPA / Intent Router 设计模式（七类插件分法 + AI 边界严守），实现完全自研。
 
 **双形态**：
-- **B 形态**（主路径）：本地笔电算力 + 远端 LLM token，单一 Win MSI / Linux deb 安装包
-- **A 形态**（二期）：K3 一体机（SpacemiT X100，192.168.100.209），底座推理由 K3 :8080 提供，可选装本地 LLM
+- **B 形态**（主路径）：本地笔电 + 远端 LLM token。Tauri 2 桌面壳套现有 Preact 前端，单一 Attune.exe / .AppImage 双击即用，含原生窗口 / 托盘 / 单实例 / 自动更新
+- **A 形态**（二期）：K3 一体机（SpacemiT X100，192.168.100.209）跑 attune-server headless（无 Tauri），用户用浏览器或 Tauri Desktop 远程接入；底座推理由 K3 :8080 提供，可选装本地 LLM
+- **同一份 Rust 后端代码**（attune-server crate），双形态共享
 
 **核心价值**：律师丢一张借条照片，attune 5 秒内告诉他"这是王某诉李某案 · 第 3 份证据 · 与已有借款合同金额一致 · 与微信记录时间冲突 · 建议补充资金到账银行流水"。
 
@@ -402,9 +403,178 @@ browser_capture_templates:
 
 ---
 
+## 6.5 桌面壳（Tauri 2）
+
+### 6.5.1 决策（Q-D / Q-E / Q-G）
+
+- **Q-D 入口形态 = (a) 双轨发版** — Tauri 桌面包给笔电用户，纯 attune-server 包给 K3 / NAS / 服务器。同一份 Rust 后端代码。
+- **Q-E WebView 加载方式 = (a) HTTP 加载 :18900** — 前端零改动，Tauri 是浏览器壳。后期可增量把高频 API 改走 Tauri IPC，不必一次到位。普通浏览器访问 :18900 也能用（headless 兼容）。
+- **Q-G attune-server 启动方式 = (a) Tauri 主进程内嵌 axum runtime（同进程）** — 单一二进制 Attune.exe，启动时同时拉起 axum + WebView。崩溃即崩溃，分发简单。
+
+### 6.5.2 架构
+
+```
+Attune Desktop（笔电用户）            Attune Server（K3 / NAS / 服务器）
+┌──────────────────────────┐         ┌──────────────────────────┐
+│ apps/attune-desktop      │         │ rust/crates/attune-server│
+│ (Tauri 2, Rust)          │         │ (axum :18900 only)       │
+│                          │         │                          │
+│ ├─ Tauri WebView         │         │  ← 浏览器 / Chrome 扩展  │
+│ │  → 加载 :18900         │         │     远程访问             │
+│ ├─ 系统托盘 + 单实例     │         │                          │
+│ ├─ 原生通知 / 文件关联   │         │                          │
+│ ├─ 自动更新（见 §6.6）   │         │                          │
+│ └─ 内嵌 attune-server    │         │                          │
+│    （axum 跑在同进程）   │         │                          │
+└──────────────────────────┘         └──────────────────────────┘
+        Win MSI / Linux deb                Linux deb / aarch64
+```
+
+### 6.5.3 Cargo workspace 改动
+
+```toml
+# rust/Cargo.toml
+[workspace]
+members = [
+    "crates/attune-core",
+    "crates/attune-server",       # 改为 lib + 旧 bin headless 入口保留
+    "apps/attune-desktop",        # 新增 — Tauri shell + 内嵌 attune-server
+]
+```
+
+`attune-server` 从单一 binary crate 改为 **library + 一个 headless bin**：
+- `lib.rs` 暴露 `pub fn run_in_runtime(handle: tokio::runtime::Handle, config: ServerConfig) -> ServerHandle`
+- `bin/attune-server-headless.rs` 是原 main，保留给 K3 / NAS 部署
+- `apps/attune-desktop/src/main.rs` 调用 `attune_server::run_in_runtime()` 把 axum 跑在 Tauri tokio runtime 上
+
+### 6.5.4 桌面壳必备特性
+
+| 特性 | 实现 | 优先级 |
+|:---|:---|:---|
+| 系统托盘（关闭最小化） | `tauri::tray::TrayIconBuilder` | P0 |
+| 单实例锁（重复双击只激活已有窗口） | `tauri-plugin-single-instance` | P0 |
+| 启动 splash + axum 健康检查 | 自定义 webview pre-init | P0 |
+| 文件关联（双击 .pdf 用 attune 打开） | tauri.conf.json `fileAssociations` | P1 |
+| 拖拽文件到窗口 → 自动上传 | webview drop event → invoke('upload') | P0 |
+| 原生通知（RPA 任务完成） | `tauri::notification::Notification` | P1 |
+| 自动启动（开机自启） | `tauri-plugin-autostart` | P2，opt-in |
+| 系统暗色模式跟随 | `tauri::WebviewWindow::theme()` | P2 |
+| 顶部菜单栏（Mac 风 / Win 风） | `tauri::Menu` | P2 |
+
+### 6.5.5 Tauri 工程结构
+
+```
+apps/attune-desktop/
+├── Cargo.toml
+├── tauri.conf.json          # 构建配置（appId / bundler / updater endpoint）
+├── build.rs                  # tauri-build 编译时脚本
+├── src/
+│   ├── main.rs               # tauri::Builder + 内嵌 attune_server::run_in_runtime
+│   ├── tray.rs               # 系统托盘
+│   ├── single_instance.rs    # 单实例锁
+│   └── commands.rs           # Tauri IPC commands（v0.6 暂不用，HTTP 优先）
+├── icons/                    # 平台图标（icon.ico / icon.png / icon.icns）
+└── ../../crates/attune-server/ui/dist/  # 前端构建产物（被 Tauri 嵌入）
+```
+
+---
+
+## 6.6 安装更新策略
+
+### 6.6.1 设计目标
+
+- **零摩擦**：用户不需要主动检查更新；后台静默检查，重大版本弹窗提示
+- **可信任**：所有更新包 Ed25519 签名，离线验签，劫持包无法安装
+- **可控**：用户可选 stable / beta 通道；可关闭自动检查
+- **回滚**：若新版崩溃，下次启动时检测到 panic 自动建议回滚（需保留上一版二进制）
+- **双轨形态各自适配**：Tauri Desktop 走 in-app updater；attune-server-only 走系统包管理（apt / yum / dnf）
+
+### 6.6.2 Tauri Desktop 更新流（笔电）
+
+```
+启动后 30 秒（不阻塞 UI）
+  ↓
+GET https://updates.attune.ai/desktop/{stable|beta}/latest.json
+  ↓
+{
+  "version": "0.7.0",
+  "notes": "新增...",
+  "pub_date": "2026-05-08T10:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "...",                        # minisign 签名
+      "url": "https://.../Attune_0.7.0_x64.msi"
+    },
+    "linux-x86_64": { ... }
+  }
+}
+  ↓
+比较版本号 → 高于当前 ?
+  ↓ 是
+  ↓
+判断 channel：
+  - "patch"（0.6.0 → 0.6.1）= 后台静默下载，下次启动应用
+  - "minor"（0.6.x → 0.7.0）= 弹窗提示用户，"现在更新 / 稍后 / 跳过此版本"
+  - "major"（0.x → 1.0）= 强制弹窗 + 列出 breaking changes，必须用户点击
+```
+
+### 6.6.3 签名链路
+
+```
+开发机
+├── Ed25519 私钥（离线保管，2-of-3 Shamir 分片）
+└── tauri signer sign Attune_0.7.0_x64.msi → Attune_0.7.0_x64.msi.sig
+
+CI 发版
+├── 构建产物上传 OSS / S3
+├── 生成 latest.json（含签名 base64）
+└── 推到 https://updates.attune.ai/desktop/stable/latest.json
+
+客户端验签
+├── 启动时下载 latest.json
+├── tauri-plugin-updater 用内置公钥验 latest.json 签名
+├── 下载 .msi → 用同公钥验 .msi.sig → OK 才允许安装
+└── 验签失败 → 拒绝 + 上报遥测
+```
+
+公钥**编译进二进制**（不是配置文件，避免被替换）。私钥泄露则发**轮替版本**，把新公钥编进新版二进制。
+
+### 6.6.4 attune-server-only 更新流（K3 / NAS）
+
+走标准 Linux 包管理，不重新发明：
+- **Debian/Ubuntu**：发版到 `apt.attune.ai` 仓库（或 GitHub Releases + apt-get），用户走 `apt update && apt upgrade attune-server`
+- **systemd timer 自动检查**：可选 `attune-update.timer`（每天 03:00 检查），失败则 `journalctl -u attune-update` 告警
+- **K3 一体机**：出厂带 `apt.attune.ai` 仓库配置，开机即可收到更新通知
+
+### 6.6.5 通道与版本策略
+
+| 通道 | 用户 | 频率 | 稳定性 | 配置 |
+|:---|:---|:---|:---|:---|
+| stable | 默认 | 月度 minor / 周度 patch | 严格通过 QA + golden set 全过 | Settings 默认值 |
+| beta | 主动 opt-in | 双周 | golden set 通过即发 | Settings 切换 |
+| nightly | 内部 / 内测律师 | 每日 | 仅 CI 通过 | 隐藏入口（特殊 license key） |
+
+### 6.6.6 回滚机制
+
+- 每次成功更新后保留 **上一版二进制**到 `~/.local/share/attune/.previous/`（最多 1 个）
+- 若新版连续 3 次启动后 5 秒内 crash，下次启动时弹窗：
+  > "Attune 0.7.0 启动后频繁崩溃。要回滚到 0.6.5 吗？[回滚] [继续尝试] [发送崩溃报告]"
+- 用户点回滚 → 替换 binary + 写日志 + 上报遥测
+
+### 6.6.7 数据迁移与 schema 版本
+
+- vault schema 版本号嵌入 SQLite `PRAGMA user_version`
+- 新版启动时检查 `db_version < embedded_version` → 跑 `migrations/<from>_to_<to>.sql`
+- 迁移**只前进不后退**；回滚到旧版时若 schema 已升级，旧版报错"vault 已被新版打开过，请重新升级或从备份恢复"
+- 重大 schema 变更（如 v0.6 → v1.0）必须发布前 3 个月预告 + changelog + 自动备份
+
+---
+
 ## 7. 跨平台分发（M1 + 平台优先级）
 
-### 7.1 阶段 0：跨平台编译卫生（0.5 周）
+**两条独立的发版流水线**：
+
+### 7.1 阶段 0：跨平台编译卫生（共享前置，0.5 周）
 
 ```toml
 # Cargo.toml
@@ -415,25 +585,44 @@ directml = ["ort/directml"]          # Windows 核显/独显
 # coreml feature 保留但 v0.6/v0.7 不验证
 ```
 
-### 7.2 Windows 安装包（P0）
+`#[cfg(unix)]` / `#[cfg(windows)]` 全面补全（vault 文件权限 / 临时目录 / 进程管理 / 路径分隔符）。
 
-- WiX MSI installer
-- 捆绑 Ollama runtime（OllamaSetup.exe 内嵌，post-install 自动安装到默认位置 + 设置 systray autostart）
-- 捆绑 whisper-cli.exe + tesseract.exe + 模型
-- EV Code Signing（生产前必须）+ Defender SmartScreen 注册（首次发版会报误，需要 7-14 天信誉积累）
-- v0.6 GA 目标：从下载 .msi 到 Web UI 出现 ≤ 60 秒（含 Ollama 注册服务）
+### 7.2 Attune Desktop（笔电用户，Tauri bundler 打包）
 
-### 7.3 Linux 安装包（P1）
+通过 Tauri bundler 一键出三种产物（**不再用 WiX / cargo-deb 各自配置**）：
 
-- AppImage（自包含，所有发行版可用）
-- .deb（Ubuntu 22.04+ / Debian 12+，systemd user unit）
-- .rpm（Fedora 40+）
-- Ollama / tesseract 走系统包 dependency（不重复捆绑）
-- aarch64 build 给 K3 一体机
+| 平台 | 产物 | 优先级 | 大小（估）|
+|:---|:---|:---|:---|
+| Windows x86_64 | `Attune_0.6.0_x64-setup.exe`（NSIS）+ `Attune_0.6.0_x64.msi`（Wix from Tauri） | **P0** | ~150 MB |
+| Linux x86_64 | `attune_0.6.0_amd64.deb` + `Attune-0.6.0.AppImage` | **P1** | ~150 MB |
+| Linux aarch64 | `attune_0.6.0_arm64.deb`（K3 一体机预装） | P2 | ~150 MB |
+| macOS | `Attune_0.6.0_x64.dmg` + `Attune_0.6.0_aarch64.dmg` | 暂不做 | — |
+
+**安装包内含**：Tauri shell + attune-server runtime + Ollama runtime + whisper-cli + tesseract + 必要底座模型（bge-small + whisper-small Q8 + tesseract chi_sim）。**不含 LLM 模型**（M2 决策）。
+
+**Windows 签名**：
+- v0.6 alpha：用 self-signed 证书或不签（用户首次会有 Defender 警告，给定向用户用）
+- v0.6 GA：购买 EV Code Signing 证书（¥2000-5000/年），SmartScreen 信誉冷启动 7-14 天
+- 关键：留 2 周 buffer 给签名信誉积累
+
+**自动更新**：见 §6.6 — Tauri 内置 updater 接 `https://updates.attune.ai/desktop/`。
+
+### 7.3 Attune Server（K3 / NAS / 服务器，纯 attune-server）
+
+走标准 Linux 包管理，**不打 Tauri**：
+
+| 渠道 | 命令 | 优先级 |
+|:---|:---|:---|
+| Debian/Ubuntu apt 仓库 | `curl ... \| sudo apt-key add - && apt install attune-server` | P0（K3 一体机依赖）|
+| GitHub Releases tarball | 解压即用 | P1 |
+| Docker image | `docker run -p 18900:18900 attune/server:0.6.0` | P2 |
+| systemd unit 模板 | `apt install` 时自动注册 user unit | P0 |
+
+**自动更新**：apt 自带 `apt-get update && apt-get upgrade`；`attune-update.timer` 可 opt-in。
 
 ### 7.4 macOS（暂不做）
 
-不投入资源至 v1.0；保留 cfg 抽象不破坏未来兼容。
+不投入资源至 v1.0；保留 Tauri / cfg 抽象，未来一行改动可通。
 
 ---
 
@@ -456,20 +645,23 @@ directml = ["ort/directml"]          # Windows 核显/独显
 
 ---
 
-## 9. Sprint 节奏（10 周到 attune-law-personal v0.1）
+## 9. Sprint 节奏（11 周到 attune-law-personal v0.1）
 
-| Sprint | 周 | 交付 | 依赖 |
-|:---|:---|:---|:---|
-| **0** | 0.5 | 跨平台编译卫生（ort feature 拆 / cfg 补全 / Windows MSVC build 通） | — |
-| **1** | 1.5 | Project / Case 数据模型 + AI 推荐归类 + 跨证据链 workflow | S0 |
-| **2** | 2 | Intent Router + 9 个 attune-pro skill 加 chat_trigger（5 law + 4 presales）| S1 |
-| **3** | 2 | RPA 自研：flk_npc + wechat_article + 异步后台框架 + 顶栏进度面板 | S2 |
-| **4** | 1 | 扩展行业化：白名单 + 浮窗 + 三档默认 + 检索捕获 | S2 |
-| **5** | 1 | ASR 集成（whisper.cpp） + 中文 WER golden test | S0 |
-| **6** | 1 | Win MSI + Linux deb 打包 + Ollama 捆绑 + 安装 smoke test | 全部 |
-| **7** | 1 | License key 联调 + 会员配额扣减 + Playwright 全链路 E2E | S6 |
+| Sprint | 周 | 交付 | 依赖 | 可并行？ |
+|:---|:---|:---|:---|:---|
+| **0** | 0.5 | 跨平台编译卫生（ort feature 拆 / cfg 补全 / Win MSVC build 通） | — | — |
+| **0.5** | 1.5 | **Tauri 2 桌面壳**（apps/attune-desktop）+ 内嵌 axum + 托盘 + 单实例 + 拖拽 + Win/Linux Tauri bundler 出包成功 | S0 | — |
+| **1** | 1.5 | Project / Case 数据模型 + AI 推荐归类 + 跨证据链 workflow | S0 | 与 S0.5 并行 |
+| **2** | 2 | Intent Router + 9 个 attune-pro skill 加 chat_trigger（5 law + 4 presales）| S1 | — |
+| **3** | 2 | RPA 自研：flk_npc + wechat_article + 异步后台框架 + 顶栏进度面板 | S2 | 与 S4 并行 |
+| **4** | 1 | 扩展行业化：白名单 + 浮窗 + 三档默认 + 检索捕获 | S2 | 与 S3 并行 |
+| **5** | 1 | ASR 集成（whisper.cpp） + 中文 WER golden test | S0 | 与 S2/S3/S4 并行 |
+| **6** | 1 | **自动更新链路打通**（Tauri updater + 签名 + latest.json gateway）+ apt 仓库搭建 | S0.5 | — |
+| **7** | 1 | License key 联调 + 会员配额扣减 + Playwright 全链路 E2E | S6 | — |
 
-总周期：**~10 周**到可发的 v0.1。
+并行度高于线性 11 周；理论最优 ~7-8 周。
+
+**首批落地（Sprint 0 + 0.5 + 1，~3.5 周）即可 demo 给律师看**：双击 .exe → 看到 Tauri 窗口 → 拖文件进去 → AI 推荐归类到 Project → 跨证据链联想批注。这是核心价值最快落地路径。
 
 ---
 
@@ -534,16 +726,43 @@ attune-pro 现有 9 capabilities（5 law + 4 presales）按本 spec 升级：
 
 ## 13. 验收清单（v0.1 GA Definition of Done）
 
-- [ ] Win MSI + Linux deb 双包装可用，从下载到 Web UI 出现 ≤ 60 秒
-- [ ] 安装包不含 LLM 模型，但含 Ollama runtime + bge-small + whisper-small + tesseract chi_sim
+### 桌面体验（Tauri Desktop）
+
+- [ ] 双击 `Attune.exe` / `Attune.AppImage` ≤ 30 秒看到主窗口（含 axum 启动）
+- [ ] 关闭主窗口 = 最小化到系统托盘（不退出进程）
+- [ ] 单实例锁：重复双击只激活已有窗口
+- [ ] 拖文件到窗口 → 自动进入上传流
+- [ ] RPA 任务完成 → 系统原生通知
+
+### 安装与更新
+
+- [ ] Win NSIS/MSI + Linux deb + AppImage + aarch64 deb 四个产物从 CI 一键出
+- [ ] 安装包不含 LLM 模型，但含 Ollama runtime + bge-small + whisper-small Q8 + tesseract chi_sim（共 ~150 MB）
+- [ ] Tauri updater 自动检查 `https://updates.attune.ai/desktop/stable/latest.json` 通过
+- [ ] `latest.json` 和 `.msi/.deb` 双重 Ed25519 签名，验签失败拒绝安装
+- [ ] patch / minor / major 三档更新策略可配置（Settings UI）
+- [ ] 回滚机制：3 次启动 5 秒内 crash 自动建议回滚，保留上一版二进制
+- [ ] vault schema 自动迁移（v0.5 → v0.6 升级测试通过）
+
+### 行业版核心价值
+
 - [ ] Project / Case 数据模型 + AI 推荐归类（准确率 ≥ 70% 在 20 律师样本上）
 - [ ] Intent Router 路由 9 个 attune-pro skill 准确率 ≥ 85%
 - [ ] flk_npc + wechat_article 两个 RPA 走完异步后台 + 顶栏进度面板 + 错误恢复
 - [ ] 跨证据链推理 workflow 在律师 corpus golden test 上 precision@3 ≥ 0.6
 - [ ] 中文 ASR WER ≤ 20%（whisper-small Q8）
 - [ ] 扩展行业化模板（≥ 5 个白名单域名）+ 三档默认
+
+### 商业化与合规
+
 - [ ] License key 离线校验 + 配额扣减 + grace period
-- [ ] Playwright 7 步关键路径全过
+- [ ] Playwright 7 步关键路径全过（详见 §10）
+
+### Headless 兼容（双轨）
+
+- [ ] `attune-server-headless` bin 可独立运行（不依赖 Tauri）
+- [ ] 浏览器访问 :18900 等价于 Tauri 内 webview（API 一致）
+- [ ] aarch64 deb 包可在 K3（192.168.100.209）上 `apt install` 成功
 
 ---
 
