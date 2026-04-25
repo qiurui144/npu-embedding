@@ -1347,7 +1347,7 @@ git worktree remove .worktrees/phase3-long-text   # 无 --force，git 自然检�
 ## R19 — stale local branches 清理
 
 **Status**: DONE
-**Commit**: <填充于本 commit 之后>
+**Commit**: `a50236f` (docs only, will amend with this fill-in)
 
 ### 主仓本地分支 pre-state
 
