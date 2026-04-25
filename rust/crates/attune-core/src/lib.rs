@@ -1,10 +1,10 @@
 pub mod ai_annotator;
 pub mod annotation_weight;
-pub mod chat;
+pub(crate) mod chat;
 pub mod chunker;
 pub mod context_compress;
-pub mod plugin_loader;
-pub mod plugin_sig;
+pub(crate) mod plugin_loader;
+pub(crate) mod plugin_sig;
 pub mod classifier;
 pub mod clusterer;
 pub mod crypto;
@@ -13,10 +13,10 @@ pub mod infer;
 pub mod error;
 pub mod index;
 pub mod llm;
-pub mod ocr;
+pub(crate) mod ocr;
 pub mod parser;
 pub mod platform;
-pub mod queue;
+pub(crate) mod queue;
 pub mod scanner;
 pub mod scanner_patent;
 pub mod scanner_webdav;
@@ -29,7 +29,7 @@ pub mod vectors;
 pub mod skill_evolution;
 pub mod web_search;
 pub mod web_search_browser;
-pub mod web_search_engines;
+pub(crate) mod web_search_engines;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

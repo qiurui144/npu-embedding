@@ -1,6 +1,6 @@
 pub mod routes;
 pub mod state;
-pub mod middleware;
+pub(crate) mod middleware;
 
 use axum::middleware as axum_mw;
 use axum::routing::{delete, get, post};

@@ -301,3 +301,59 @@ attune-core/src/store/
 Sprint 0（Tauri shell）/ Sprint 0.5（行业版定位）/ Sprint 1（进行中）三阶段都直接依赖现有 `Store` API，**改动风险 > 立刻收益**。R5 仅留 backlog，由具体 sprint 在闲档期携带 task 一起做（拆完顺手测）。
 
 ---
+
+## R6 — pub 可见性审计
+
+**目标**：扫描 attune-core / attune-server 的 `pub mod` / `pub fn` / `pub struct`，凡仅本 crate 内部用的降级到 `pub(crate)`，缩小 API 外露面。
+
+### 跨 crate 真实使用面
+
+工作区结构：`attune-core` (lib) → `attune-server` (lib + bin) → `attune-cli` (bin)；外加 `apps/attune-desktop` (bin) 用 `attune-server`。`rust/crates/attune-tauri/` 仍是 templates 占位、未加入 workspace member，本轮不动。
+
+**真用 attune-core 模块**（综合源代码 + 集成测试 + 双 crate 调用）：
+`ai_annotator, annotation_weight, chunker, classifier, clusterer, context_compress, crypto, embed, error, index, infer, llm, parser, platform, scanner, scanner_patent, scanner_webdav, search, skill_evolution, store, tag_index, taxonomy, vault, vectors, web_search, web_search_browser`（26 个）
+
+**真用 attune-server 顶层**：`ServerConfig`, `run_in_runtime`, `build_router`, `is_allowed_origin`（注意 `is_allowed_origin` 被 `bin/headless.rs` 用），`state::AppState`, `routes::index::validate_bind_path`（被 `tests/index_path_test.rs` 用）。
+
+### 本轮降级（6 项 attune-core mod + 1 项 attune-server mod = 7 项）
+
+| 模块 | 原状 | 降级到 | 安全降级理由 |
+|------|------|--------|------|
+| `attune_core::chat` | `pub mod` | `pub(crate) mod` | 全工作区无任何 use；server 的 routes::chat 是同名不同物（路由名）；attune-core 内部也未引用 — 真死代码，但 R6 只降级不删 |
+| `attune_core::ocr` | `pub mod` | `pub(crate) mod` | 仅 `parser.rs` 内部调用 `crate::ocr::*`；外部跨 crate 零引用 |
+| `attune_core::plugin_loader` | `pub mod` | `pub(crate) mod` | 仅 `ai_annotator.rs` 通过 `crate::plugin_loader::*` 用；外部跨 crate 零引用 |
+| `attune_core::plugin_sig` | `pub mod` | `pub(crate) mod` | 全工作区零引用（注释里出现"plugin_sig.rs"是字符串说明）— 当前死代码，留给未来 PluginHub 上线 |
+| `attune_core::queue` | `pub mod` | `pub(crate) mod` | 全工作区零引用；`enqueue_embedding` 是 `Store` 的方法不是此模块 — 真死代码 |
+| `attune_core::web_search_engines` | `pub mod` | `pub(crate) mod` | 仅 `web_search.rs` / `web_search_browser.rs` 通过 `crate::web_search_engines::DuckDuckGoEngine` 用；外部跨 crate 零引用 |
+| `attune_server::middleware` | `pub mod` | `pub(crate) mod` | 全工作区（含 server 自家 bin/、tests/）零引用；可能仅 lib.rs 内部用 |
+
+### 已尝试但回滚的降级（2 项）
+
+| 模块 | 降级失败原因 |
+|------|------|
+| `attune_core::parser` | server `routes/upload.rs` 用 `use attune_core::{chunker, parser};`，必须保留 pub。最初的 grep 只匹配 `attune_core::name::*` 漏掉了 brace import。教训：跨 crate 检查需用 `attune_core::\{[^}]*\bname\b\|attune_core::name` 双正则 |
+| `attune_server::is_allowed_origin` | `bin/headless.rs` 用 `use attune_server::is_allowed_origin;`，binary target 对 lib 算外部，必须保留 pub |
+
+### 跳过未动（保守审计）
+
+下列项即使可能"看起来"没人跨 crate 用，但属于 **#[derive] 自动生成 / trait 泛型 / re-export** 类，grep 难精确判定，本轮一律不动：
+
+- `attune-core` 中所有 `pub struct` / `pub fn` / `pub trait` — 数量大（~200 项）且很多是 `LlmProvider` / `EmbeddingProvider` / `RerankProvider` 等 trait 对象 boundary，跨 crate 经 trait object 间接传递难追踪
+- `attune-server::routes` 子树 — 含 `validate_bind_path` 等 server tests/ 引用项，必须保 pub
+- `attune-server::state::AppState` — server tests + apps/attune-desktop 都用，必须保 pub
+
+如需进一步降级，建议未来用 `cargo-public-api` / `cargo-semver-checks` 工具做 API 表 diff，或 `#[deprecated(note = "...")]` 标注观察一两个 sprint 再删。
+
+### 收益与风险
+
+- 数字：attune-core 顶层 `pub mod` 32 → 26 真 pub + 6 pub(crate)；attune-server 顶层 `pub mod` 3 → 2 真 pub + 1 pub(crate)
+- 收益：对外 API 表面小 22%，未来 v0.6 GA 给 SDK / 第三方插件文档化时少删少改
+- 风险：单一二进制项目（attune），降级 pub 不打破任何用户；attune-pro / extension / docs / Python 端均未引用 Rust 内部模块（Rust 通过 HTTP `/api/v1/*` 暴露能力）
+
+### 验证
+
+- `cargo build --release --workspace`：通过
+- `cargo build --release` (apps/attune-desktop)：通过
+- `cargo test --release --workspace -- --test-threads=2`：**377 passed, 0 failed**（与 baseline 一致）
+
+---
