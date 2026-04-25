@@ -275,12 +275,6 @@ impl VectorIndex {
 mod tests {
     use super::*;
 
-    fn random_vector(dims: usize) -> Vec<f32> {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        (0..dims).map(|_| rng.gen::<f32>()).collect()
-    }
-
     #[test]
     fn create_index() {
         let idx = VectorIndex::new(1024).unwrap();

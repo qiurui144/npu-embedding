@@ -1,7 +1,7 @@
 // npu-vault/crates/vault-core/src/embed.rs
 
 use crate::error::{Result, VaultError};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::OnceLock;
 
 /// 共享 Runtime，复用于所有 Ollama embedding 同步调用（与 llm.rs 中 llm_rt 同理）
@@ -44,12 +44,8 @@ pub struct OllamaProvider {
     dims: usize,
 }
 
-#[derive(Serialize)]
-struct EmbedRequest<'a> {
-    model: &'a str,
-    input: Vec<&'a str>,
-}
-
+// EmbedRequest 已被 serde_json::json!() 内联构造取代（见 OllamaProvider::embed），
+// 不再需要独立结构体。EmbedResponse 仍用于反序列化 Ollama 响应。
 #[derive(Deserialize)]
 struct EmbedResponse {
     embeddings: Vec<Vec<f32>>,

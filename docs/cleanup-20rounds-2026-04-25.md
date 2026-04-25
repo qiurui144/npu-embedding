@@ -52,3 +52,34 @@
 
 ---
 
+## R1 — dead_code warning 扫除
+
+**Status**: DONE
+**Commit**: <pending>
+
+### Findings
+- `rust/crates/attune-core/src/embed.rs:48` — `struct EmbedRequest<'a>` never constructed — **删除**（已被第 113 行 `serde_json::json!()` 内联构造取代，是历史遗留）
+- `rust/crates/attune-core/src/vectors.rs:278` — `fn random_vector(dims: usize) -> Vec<f32>` never used — **删除**（测试模块内死代码；且 `rand::gen` 违反 CLAUDE.md "零随机测试数据" 规范）
+
+### 副作用清理
+- 删除 `EmbedRequest` 后，`use serde::{Deserialize, Serialize}` 中 `Serialize` 变成 unused import — 改为 `use serde::Deserialize`（属于本次改动直接连带，不留给 R3）
+
+### 决策清单
+| 项 | 决策 | 理由 |
+|----|------|------|
+| `EmbedRequest<'a>` | 删除 | 已被 inline json! 取代 |
+| `random_vector` | 删除 | 测试内未调用 + 违反零随机数据规范 |
+| `Serialize` import | 同步删除 | 删除 EmbedRequest 的直接副作用 |
+
+### 验证
+- Pre: 1 个 dead_code warning（`cargo build --release --workspace`）；clippy `--all-targets` 额外发现 1 个（test 模块内 random_vector）
+- Post: 0 个 dead_code warning（`cargo build --release --workspace` 总 warning = 0；clippy `--all-targets` dead_code = 0）
+- Tests: 377 passed, 0 failed（与 baseline 一致）
+- attune-desktop (`apps/attune-desktop`) `cargo build --release` 同样 0 warning
+
+### Notes
+- 本轮只动 dead_code，未触碰 clippy 其他类别（redundant closure / div_ceil / 等）— 留给后续 R3
+- workspace 仍有约 30+ 条非 dead_code 的 clippy warning（unused_imports 待 R3，redundant_closure 待 R4）
+
+---
+
