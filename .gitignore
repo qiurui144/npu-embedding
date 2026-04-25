@@ -58,3 +58,7 @@ config.local.yaml
 .env.local
 .worktrees/
 .playwright-mcp/
+
+# Tauri signing keys（私钥永不入 git；公钥已嵌进 tauri.conf.json）
+apps/attune-desktop/keys/dev_signing.key
+apps/attune-desktop/keys/dev_signing.key.pub

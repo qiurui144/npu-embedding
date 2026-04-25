@@ -23,6 +23,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 1. spawn 内嵌 axum
             let _server_handle = embedded_server::spawn_server();
@@ -81,6 +82,30 @@ fn main() {
                         if let Err(e) = crate::tray::build(&app_handle) {
                             tracing::error!("failed to build system tray: {e}");
                         }
+
+                        // 启动 30s 后检查更新（gateway 在 Sprint 6 才搭，这里只验证
+                        // plugin 接通 + graceful failure：DNS 不可达 → log warn，不 panic）
+                        let app_handle_for_update = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            use tauri_plugin_updater::UpdaterExt;
+                            match app_handle_for_update.updater() {
+                                Ok(updater) => match updater.check().await {
+                                    Ok(Some(update)) => {
+                                        tracing::info!(
+                                            "update available: {} -> {}",
+                                            update.current_version,
+                                            update.version
+                                        );
+                                    }
+                                    Ok(None) => tracing::info!("no update available"),
+                                    Err(e) => tracing::warn!(
+                                        "update check failed (gateway maybe offline): {e}"
+                                    ),
+                                },
+                                Err(e) => tracing::warn!("updater handle unavailable: {e}"),
+                            }
+                        });
                     }
                     Err(e) => {
                         tracing::error!("embedded server failed to start: {e}");
