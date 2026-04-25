@@ -8,6 +8,7 @@ use axum::http::{HeaderValue, Method};
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tracing_subscriber::EnvFilter;
 
 pub fn is_allowed_origin(s: &str) -> bool {
     s.starts_with("chrome-extension://")
@@ -36,6 +37,8 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .allow_credentials(true);
 
     Router::new()
+        // Health check（前缀外，方便 Tauri / monitor 直接探活）
+        .route("/health", get(routes::status::health))
         // Vault endpoints (no guard needed)
         .route("/api/v1/vault/status", get(routes::vault::vault_status))
         .route("/api/v1/vault/setup", post(routes::vault::vault_setup))
@@ -119,4 +122,95 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .layer(axum_mw::from_fn_with_state(shared_state.clone(), middleware::bearer_auth_guard))
         .layer(cors)
         .with_state(shared_state)
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub no_auth: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 18900,
+            tls_cert: None,
+            tls_key: None,
+            no_auth: false,
+        }
+    }
+}
+
+/// 启动 attune-server 在当前 tokio runtime 上。
+///
+/// 用法：
+/// - `attune-server-headless` binary 直接 await
+/// - `attune-desktop` (Tauri) 也调这个函数把 axum 跑在 Tauri 的 tokio runtime
+pub async fn run_in_runtime(
+    config: ServerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .try_init();
+
+    let hw = attune_core::platform::HardwareProfile::detect();
+    tracing::info!("hardware: {}", hw.summary());
+    let applied = hw.apply_recommended_env();
+    for (key, reason) in &applied {
+        tracing::info!(
+            "hardware: set {}={} — {}",
+            key,
+            std::env::var(key).unwrap_or_default(),
+            reason
+        );
+    }
+
+    let vault = attune_core::vault::Vault::open_default()?;
+    let require_auth = !config.no_auth;
+    if config.no_auth {
+        tracing::warn!("⚠  Authentication DISABLED via config.no_auth.");
+    }
+
+    let shared_state = Arc::new(state::AppState::new(vault, require_auth));
+    let app = build_router(shared_state);
+
+    let is_loopback = {
+        use std::net::IpAddr;
+        config.host == "localhost"
+            || config.host
+                .parse::<IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false)
+    };
+    let has_tls = config.tls_cert.is_some() && config.tls_key.is_some();
+    if !is_loopback && !has_tls {
+        tracing::warn!("⚠  Server bound to non-loopback '{}' without TLS.", config.host);
+    }
+    if !is_loopback && !require_auth {
+        tracing::warn!("⚠  Auth disabled on non-loopback '{}'.", config.host);
+    }
+
+    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
+
+    match (config.tls_cert.as_ref(), config.tls_key.as_ref()) {
+        (Some(cert), Some(key)) => {
+            tracing::info!("attune-server listening on https://{addr}");
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        _ => {
+            tracing::info!("attune-server listening on http://{addr}");
+            let listener = tokio::net::TcpListener::bind(&addr).await?;
+            axum::serve(listener, app).await?;
+        }
+    }
+
+    Ok(())
 }
