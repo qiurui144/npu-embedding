@@ -707,7 +707,7 @@ CLAUDE.md / `docs/TESTING.md` 要求：
 ## R11 — 错误处理 gap audit
 
 **Status**: DONE
-**Commit**: TBD-after-commit
+**Commit**: `a84aa8b`
 
 ### 全局统计（prod path，排除 `#[cfg(test)] mod tests` 之后内容 + `tests/` 目录）
 
