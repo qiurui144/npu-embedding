@@ -83,3 +83,49 @@
 
 ---
 
+
+## R2 — unused dependencies 扫除
+
+**Status**: DONE
+**Commit**: 55da874
+**Tool**: `cargo-machete v0.9.2`
+
+### Findings (machete report)
+
+主 workspace `rust/`:
+- `attune-core`: `futures`, `ndarray`
+- `attune-server`: `rustls`, `rustls-pemfile`, `tokio-rustls`
+
+独立 workspace `apps/attune-desktop/`:
+- `attune-desktop`: `serde`, `serde_json`
+
+### Decisions
+
+| Dep | Crate | 决策 | 理由 |
+|---|---|---|---|
+| `futures = "0.3"` | attune-core | **删除** | grep src/ tests/ 全无引用 |
+| `ndarray = "0.16"` | attune-core | **删除** | 唯一用法是 `ort` feature flag `"ndarray"`，不需要直接依赖 |
+| `rustls = "0.23"` | attune-server | **删除** | 仅通过 `axum-server tls-rustls` feature 间接使用，无 `use rustls::*` |
+| `rustls-pemfile = "2"` | attune-server | **删除** | 同上，axum-server `RustlsConfig::from_pem_file` 内部处理 |
+| `tokio-rustls = "0.26"` | attune-server | **删除** | 同上，axum-server 间接拉入 |
+| `serde` | attune-desktop | **保留** + `[package.metadata.cargo-machete] ignored` | `tauri::generate_context!` 宏展开需要 — 删后 build fail |
+| `serde_json` | attune-desktop | **保留** + ignored | 同上 — false positive |
+
+### Removed
+
+- `rust/crates/attune-core/Cargo.toml`: 删 `futures` + `ndarray`
+- `rust/crates/attune-server/Cargo.toml`: 删 `rustls` + `rustls-pemfile` + `tokio-rustls`
+
+### Kept (false positives)
+
+- `attune-desktop` 的 `serde` / `serde_json` — 加 `[package.metadata.cargo-machete] ignored = ["serde", "serde_json"]`，下次 machete 不再报
+
+### Tests
+
+- Pre: 377 passed
+- Post: 377 passed, 0 failed
+- `cargo build --release --workspace`（rust/）: OK
+- `cargo build --release`（apps/attune-desktop/）: OK
+- `cargo machete`（两个 workspace）: 0 unused
+
+---
