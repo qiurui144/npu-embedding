@@ -247,6 +247,13 @@ Master Password (用户记忆)  +  Device Secret (设备文件, 256-bit 随机)
 | GET/POST/DELETE | `/projects/{id}/files` | 文件归属 Project |
 | GET | `/projects/{id}/timeline` | 案件时间线（事件 + 证据链）|
 
+### Workflow 引擎（Sprint 1 Phase C，详见 spec §3.3）
+
+- 内置 `law-pro/evidence_chain_inference` workflow，**文件上传**且**已归 Project**（用户接受 Phase B 推荐归类后）时自动跑
+- 4 步：抽实体（skill mock）→ 跨证据 (deterministic, SQL) → 推理（skill mock）→ 写批注（Phase C stub，Sprint 2 接 vault DEK）
+- WS 推送：`{"type": "workflow_complete", ...}` 跑完后通知前端
+- Sprint 2 将通过 Intent Router 接真实 LLM，并把 yaml 外提到 attune-law plugin
+
 ### 索引与系统
 
 | 方法 | 路径 | 说明 |
