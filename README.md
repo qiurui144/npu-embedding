@@ -106,6 +106,49 @@ Attune speaks the **OpenAI-compatible chat protocol**, so you can plug in any pr
 
 ---
 
+## Skill development (free + Pro, same mechanism)
+
+A *skill* is a small YAML + prompt bundle that Attune auto-suggests when your chat message matches its keywords or regex. Both the free build and Pro share the same loader — Pro just preinstalls more skills. **You never edit YAML through the UI; you write or download skills, drop them in the plugins folder, then toggle them in Settings → Skills.**
+
+**1. Create the directory**
+
+```
+~/.local/share/attune/plugins/<plugin-id>/
+```
+
+(Windows: `%APPDATA%\attune\plugins\<plugin-id>\`)
+
+**2. Write `plugin.yaml`**
+
+```yaml
+id: my-plugin/contract-quick-review
+name: 快速合同审查
+type: skill
+version: "0.1.0"
+description: 30-second triage of contract risks
+
+chat_trigger:
+  enabled: true            # plugin author can ship disabled-by-default
+  needs_confirm: true      # show user a confirm prompt before running
+  priority: 5              # higher wins when multiple skills match
+  patterns:
+    - '帮我.*审查.*合同'      # any matching pattern fires
+  keywords: ['审查合同', '合同风险', 'contract review']
+  min_keyword_match: 1     # how many keyword hits required
+  exclude_patterns: ['起草']  # vetoes the match if hit
+  requires_document: true  # only fire when chat has a pending file
+```
+
+**3. Write `prompt.md`** — the actual LLM prompt loaded when the skill runs.
+
+**4. Restart Attune** so the plugin registry rescans the folder.
+
+**5. Open Settings → Skills tab.** Your skill appears with its keywords; toggle it on/off without touching YAML again.
+
+Distributing skills to others: zip the folder as `<plugin-id>.attunepkg` — recipients drop it into the same plugins folder. Pro skills (legal / sales / academic packs) ship through the same path; the only difference is they come pre-installed.
+
+---
+
 ## Features at a glance (Rust line)
 
 - **First-run wizard**: Welcome · Master Password · LLM backend (local Ollama / cloud API / demo) · Hardware detection with model recommendations · First data binding
