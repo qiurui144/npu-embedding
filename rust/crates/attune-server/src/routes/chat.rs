@@ -82,6 +82,26 @@ pub async fn chat(
         let _ = state.recommendation_tx.send(payload);
     }
 
+    // Sprint 2 Phase C: Skills Router — 纯 observer，匹配 plugin skill 后通过 broadcast 推 ws skill_suggested
+    // 不影响主流程；disabled 集合留空（Task 4 接 settings.skills.disabled），
+    // has_pending_doc 留 false（Task 5 后由 chat context 决定）
+    {
+        let registry = state.plugin_registry.clone();
+        let disabled: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let has_pending_doc = false;
+        let router = attune_core::intent_router::IntentRouter::new(&registry);
+        let matches = router.route(&body.message, has_pending_doc, &disabled);
+        if !matches.is_empty() {
+            let payload = serde_json::json!({
+                "type": "skill_suggested",
+                "trigger": "chat_intent",
+                "matches": matches,
+                "user_message": body.message,
+            });
+            let _ = state.recommendation_tx.send(payload);
+        }
+    }
+
     // Check LLM availability
     let llm = state.llm.lock()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "llm lock poisoned"}))))?
