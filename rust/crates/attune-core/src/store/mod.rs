@@ -9,6 +9,7 @@ mod conversations;
 mod signals;
 mod chunk_summaries;
 mod annotations;
+mod project;
 
 pub use types::*;
 
@@ -182,6 +183,37 @@ CREATE TABLE IF NOT EXISTS annotations (
 CREATE INDEX IF NOT EXISTS idx_annotations_item ON annotations(item_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_source ON annotations(source);
 CREATE INDEX IF NOT EXISTS idx_annotations_created ON annotations(created_at);
+
+-- Project / Case 卷宗（spec §2.1）
+-- 通用 Project 层；行业层（attune-law / attune-sales）通过 metadata_encrypted 存
+-- opaque AES-GCM blob，attune-core 不解析其结构。
+CREATE TABLE IF NOT EXISTS project (
+    id                 TEXT PRIMARY KEY,
+    title              TEXT NOT NULL,
+    kind               TEXT NOT NULL DEFAULT 'generic',
+    metadata_encrypted BLOB,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    archived           INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS project_file (
+    project_id TEXT NOT NULL,
+    file_id    TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT '',
+    added_at   INTEGER NOT NULL,
+    PRIMARY KEY (project_id, file_id),
+    FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_timeline (
+    project_id        TEXT NOT NULL,
+    ts                INTEGER NOT NULL,
+    event_type        TEXT NOT NULL,
+    payload_encrypted BLOB,
+    FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_project_timeline_pid ON project_timeline(project_id, ts);
 "#;
 
 pub struct Store {
