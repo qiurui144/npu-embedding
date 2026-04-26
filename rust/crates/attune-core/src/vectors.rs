@@ -180,7 +180,7 @@ impl VectorIndex {
         let next_key = if key_path.exists() {
             let bytes = std::fs::read(&key_path)?;
             if bytes.len() == 8 {
-                u64::from_le_bytes(bytes.try_into().unwrap())
+                u64::from_le_bytes(bytes.try_into().expect("8-byte slice (length checked)"))
             } else { meta.len() as u64 }
         } else { meta.len() as u64 };
 
@@ -234,7 +234,7 @@ impl VectorIndex {
         if bytes.len() < 24 {
             return Err(VaultError::Crypto("vectors file too short".into()));
         }
-        let main_len = u64::from_le_bytes(bytes[0..8].try_into().unwrap()) as usize;
+        let main_len = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte slice (range fixed)")) as usize;
         let mut offset = 8;
         if bytes.len() < offset + main_len + 8 {
             return Err(VaultError::Crypto("vectors file truncated".into()));
@@ -242,7 +242,7 @@ impl VectorIndex {
         let main_bytes = &bytes[offset..offset + main_len];
         offset += main_len;
 
-        let meta_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
+        let meta_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice (range fixed)")) as usize;
         offset += 8;
         if bytes.len() < offset + meta_len + 8 {
             return Err(VaultError::Crypto("vectors file truncated".into()));
@@ -250,7 +250,7 @@ impl VectorIndex {
         let meta_bytes = &bytes[offset..offset + meta_len];
         offset += meta_len;
 
-        let key_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
+        let key_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("8-byte slice (range fixed)")) as usize;
         offset += 8;
         if bytes.len() < offset + key_len {
             return Err(VaultError::Crypto("vectors file truncated".into()));
@@ -274,12 +274,6 @@ impl VectorIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn random_vector(dims: usize) -> Vec<f32> {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        (0..dims).map(|_| rng.gen::<f32>()).collect()
-    }
 
     #[test]
     fn create_index() {

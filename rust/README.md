@@ -122,7 +122,7 @@ cd rust
 cargo build --release
 # Artifacts:
 # target/release/attune         (CLI, 4.2 MB)
-# target/release/attune-server  (HTTP server, ~30 MB)
+# target/release/attune-server-headless  (HTTP server, ~30 MB)
 ```
 
 ### 2. Start Ollama (optional, for semantic search)
@@ -149,7 +149,7 @@ Without Ollama, Attune falls back to tantivy BM25 full-text search.
 ### 4. HTTP server mode
 
 ```bash
-./target/release/attune-server --port 18900
+./target/release/attune-server-headless --port 18900
 # Browser: http://localhost:18900/
 # The first-time wizard will walk you through setup
 ```
@@ -163,7 +163,7 @@ openssl req -x509 -newkey rsa:2048 \
   -days 365 -nodes -subj "/CN=your-nas.local"
 
 # Start HTTPS + Bearer auth
-./target/release/attune-server \
+./target/release/attune-server-headless \
   --host 0.0.0.0 \
   --port 18900 \
   --tls-cert cert.pem \
@@ -288,7 +288,7 @@ All endpoints are prefixed with `/api/v1/`. Localhost access is auth-free; remot
 | Binary | Size | Purpose |
 |--------|------|---------|
 | `attune` | 4.2 MB | CLI tool (7 subcommands) |
-| `attune-server` | ~30 MB | HTTP API server (TLS + Preact UI + search engine) |
+| `attune-server-headless` | ~30 MB | HTTP API server (TLS + Preact UI + search engine) |
 
 Size breakdown: rustls crypto stack + tantivy full-text + usearch C++ bindings + Tokio + Axum + Preact UI.
 
@@ -322,6 +322,38 @@ rust/
     │       └── dist/index.html   # single-file bundle (committed, referenced by include_str!)
     └── attune-cli/               # bin: command-line tool
 ```
+
+---
+
+## Desktop Distribution
+
+Attune ships in two forms (same Rust backend code):
+
+| Form | Binary | Use Case |
+|------|--------|----------|
+| **Attune Desktop** | `apps/attune-desktop` (Tauri 2 shell) | Laptop users — double-click MSI/deb, native window + tray + drag-drop |
+| **Attune Server** (headless) | `crates/attune-server/bin/headless.rs` (`attune-server-headless`) | K3 appliance / NAS / server — `attune-server-headless --host 0.0.0.0 ...` |
+
+### Build (local)
+
+```bash
+# Linux
+cd apps/attune-desktop
+cargo install --locked tauri-cli --version "^2.0"
+(cd ../../rust/crates/attune-server/ui && npm ci && npm run build)
+cargo tauri build --bundles deb,appimage
+
+# Windows (run on Windows host)
+cargo tauri build --bundles nsis,msi
+```
+
+Output: `target/release/bundle/{deb,appimage,nsis,msi}/`.
+
+### Auto-update
+
+Desktop checks `https://updates.attune.ai/desktop/{target}/{version}/latest.json`
+30 seconds after launch. Updates are minisign-signed; pubkey embedded in binary.
+See `docs/superpowers/specs/2026-04-25-industry-attune-design.md` §6.6 for full design.
 
 ---
 

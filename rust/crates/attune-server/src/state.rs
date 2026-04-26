@@ -82,7 +82,7 @@ impl AppState {
             evolve_worker_running: AtomicBool::new(false),
             engines_initialized: AtomicBool::new(false),
             search_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(SEARCH_CACHE_CAPACITY).unwrap()
+                NonZeroUsize::new(SEARCH_CACHE_CAPACITY).expect("SEARCH_CACHE_CAPACITY is non-zero const")
             )),
             // 启动时检测一次硬件，后续复用（避免每次 GET/PATCH 都同步读 /proc 等）
             hardware: attune_core::platform::HardwareProfile::detect(),
@@ -534,7 +534,7 @@ impl AppState {
                     std::thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                let embedding = embedding.unwrap();
+                let embedding = embedding.expect("is_none() checked above");
 
                 if !embedding.is_available() {
                     std::thread::sleep(POLL_INTERVAL);

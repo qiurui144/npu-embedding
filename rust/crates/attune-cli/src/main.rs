@@ -85,7 +85,7 @@ fn run(cli: Cli) -> attune_core::error::Result<()> {
                 "data_dir": attune_core::platform::data_dir(),
                 "config_dir": attune_core::platform::config_dir(),
             });
-            println!("{}", serde_json::to_string_pretty(&status).unwrap());
+            println!("{}", serde_json::to_string_pretty(&status).expect("status JSON object is serializable"));
         }
         Commands::Insert { title, content, source_type } => {
             let dek = vault.dek_db()?;
@@ -95,7 +95,7 @@ fn run(cli: Cli) -> attune_core::error::Result<()> {
         Commands::Get { id } => {
             let dek = vault.dek_db()?;
             match vault.store().get_item(&dek, &id)? {
-                Some(item) => println!("{}", serde_json::to_string_pretty(&item).unwrap()),
+                Some(item) => println!("{}", serde_json::to_string_pretty(&item).expect("Item is serializable")),
                 None => {
                     eprintln!("Item not found: {id}");
                     std::process::exit(1);
@@ -105,7 +105,7 @@ fn run(cli: Cli) -> attune_core::error::Result<()> {
         Commands::List { limit } => {
             let _ = vault.dek_db()?;
             let items = vault.store().list_items(limit, 0)?;
-            println!("{}", serde_json::to_string_pretty(&items).unwrap());
+            println!("{}", serde_json::to_string_pretty(&items).expect("Vec<Item> is serializable"));
         }
     }
     Ok(())

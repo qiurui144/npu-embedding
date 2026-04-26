@@ -21,12 +21,10 @@ CREATE TABLE IF NOT EXISTS items (
     source_type TEXT NOT NULL DEFAULT 'note',
     domain      TEXT,
     tags        BLOB,
-    metadata    BLOB,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     is_deleted  INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_items_source ON items(source_type);
 CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_deleted ON items(is_deleted);
 
@@ -94,8 +92,8 @@ CREATE TABLE IF NOT EXISTS feedback (
     query        TEXT,
     created_at   TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_feedback_item ON feedback(item_id);
-CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
+-- 注：feedback 表当前只 INSERT 写入（来自 POST /api/v1/feedback），
+-- 暂无 SELECT 读取路径；待将来加分析/重排时再加索引。
 
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY,
@@ -990,7 +988,7 @@ impl Store {
             None
         } else {
             Some(serde_json::to_string(citations)
-                .map_err(|e| VaultError::Json(e))?)
+                .map_err(VaultError::Json)?)
         };
         self.conn.execute(
             "INSERT INTO conversation_messages (id, conversation_id, role, content, citations, created_at)
@@ -1180,15 +1178,6 @@ pub struct ItemStats {
     pub chunk_count: i64,
     pub embedding_pending: i64,
     pub embedding_done: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct FeedbackEntry {
-    pub id: i64,
-    pub item_id: String,
-    pub feedback_type: String,
-    pub query: Option<String>,
-    pub created_at: String,
 }
 
 /// Embedding 队列任务
@@ -1565,7 +1554,7 @@ mod tests {
     #[test]
     fn open_memory_creates_tables() {
         let store = Store::open_memory().unwrap();
-        assert!(store.has_meta("nonexistent").unwrap() == false);
+        assert!(!store.has_meta("nonexistent").unwrap());
     }
 
     #[test]
@@ -2276,7 +2265,7 @@ mod tests_annotations {
             [], |r| r.get(0),
         ).unwrap();
         // 密文不应包含明文
-        assert!(!enc.windows(secret.as_bytes().len()).any(|w| w == secret.as_bytes()),
+        assert!(!enc.windows(secret.len()).any(|w| w == secret.as_bytes()),
             "encrypted content must not contain plaintext");
         // 解密 list 回读应该还原
         let anns = store.list_annotations(&dek, &item_id).unwrap();

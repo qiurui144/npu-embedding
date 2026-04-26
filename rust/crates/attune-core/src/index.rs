@@ -33,10 +33,10 @@ impl FulltextIndex {
         let schema = Self::build_schema();
         let index = Index::create_in_ram(schema.clone());
         Self::register_tokenizers(&index);
-        let f_item_id = schema.get_field("item_id").unwrap();
-        let f_title = schema.get_field("title").unwrap();
-        let f_content = schema.get_field("content").unwrap();
-        let f_source_type = schema.get_field("source_type").unwrap();
+        let f_item_id = schema.get_field("item_id").expect("schema field 'item_id' defined in build_schema");
+        let f_title = schema.get_field("title").expect("schema field 'title' defined in build_schema");
+        let f_content = schema.get_field("content").expect("schema field 'content' defined in build_schema");
+        let f_source_type = schema.get_field("source_type").expect("schema field 'source_type' defined in build_schema");
         let writer = index.writer(HEAP_SIZE)
             .map_err(|e| VaultError::Crypto(format!("tantivy writer: {e}")))?;
         Ok(Self { index, schema, f_item_id, f_title, f_content, f_source_type, writer: Mutex::new(writer) })
@@ -54,10 +54,10 @@ impl FulltextIndex {
                 .map_err(|e| VaultError::Crypto(format!("tantivy create: {e}")))?
         };
         Self::register_tokenizers(&index);
-        let f_item_id = schema.get_field("item_id").unwrap();
-        let f_title = schema.get_field("title").unwrap();
-        let f_content = schema.get_field("content").unwrap();
-        let f_source_type = schema.get_field("source_type").unwrap();
+        let f_item_id = schema.get_field("item_id").expect("schema field 'item_id' defined in build_schema");
+        let f_title = schema.get_field("title").expect("schema field 'title' defined in build_schema");
+        let f_content = schema.get_field("content").expect("schema field 'content' defined in build_schema");
+        let f_source_type = schema.get_field("source_type").expect("schema field 'source_type' defined in build_schema");
         let writer = index.writer(HEAP_SIZE)
             .map_err(|e| VaultError::Crypto(format!("tantivy writer: {e}")))?;
         Ok(Self { index, schema, f_item_id, f_title, f_content, f_source_type, writer: Mutex::new(writer) })
@@ -94,7 +94,7 @@ impl FulltextIndex {
 fn tokenize_cjk_query(index: &Index, q: &str) -> String {
     use tantivy::tokenizer::TokenStream;
     let mut tokenizer = match index.tokenizer_for_field(
-        index.schema().get_field("content").unwrap()
+        index.schema().get_field("content").expect("schema field 'content' defined in build_schema")
     ) {
         Ok(t) => t,
         Err(_) => return q.to_string(),

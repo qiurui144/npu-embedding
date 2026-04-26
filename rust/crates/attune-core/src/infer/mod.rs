@@ -26,7 +26,7 @@ impl MockRerankProvider {
 
 impl RerankProvider for MockRerankProvider {
     fn score(&self, _query: &str, documents: &[&str]) -> Result<Vec<f32>> {
-        let preset = self.scores.lock().unwrap();
+        let preset = self.scores.lock().unwrap_or_else(|e| e.into_inner());
         let result = (0..documents.len())
             .map(|i| *preset.get(i % preset.len().max(1)).unwrap_or(&0.5))
             .collect();

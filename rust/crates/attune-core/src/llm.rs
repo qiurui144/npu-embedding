@@ -363,13 +363,13 @@ impl MockLlmProvider {
     }
 
     pub fn push_response(&self, json: &str) {
-        self.responses.lock().unwrap().push(json.to_string());
+        self.responses.lock().unwrap_or_else(|e| e.into_inner()).push(json.to_string());
     }
 }
 
 impl LlmProvider for MockLlmProvider {
     fn chat(&self, _system: &str, _user: &str) -> Result<String> {
-        let mut guard = self.responses.lock().unwrap();
+        let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_empty() {
             return Err(VaultError::Classification("no mock response".into()));
         }
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn mock_chat_with_history() {
         let mock = MockLlmProvider::new("test");
-        mock.push_response("history reply".into());
+        mock.push_response("history reply");
         let messages = vec![
             ChatMessage::system("sys prompt"),
             ChatMessage::user("hello"),

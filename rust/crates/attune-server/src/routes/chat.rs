@@ -193,7 +193,7 @@ pub async fn chat(
     // spawn_blocking 失败时 weighted_results 为空 —— 此时我们丢失了原 search_results。
     // 但 spawn_blocking 的 panic/join 错误极罕见（内存爆/进程被信号中断），概率远低于
     // 用户被影响的回本。已通过 tracing::warn 记录，UI 会显示 knowledge_count=0 + hint。
-    search_results = weighted_results.drain(..).collect();
+    search_results = std::mem::take(&mut weighted_results);
 
     // 按新的 score 降序重排（过时已剔除，boost 项自然前移）
     search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));

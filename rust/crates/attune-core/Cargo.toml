@@ -7,10 +7,10 @@ license.workspace = true
 
 [dependencies]
 thiserror = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
-dirs = "6"
+dirs = { workspace = true }
 argon2 = "0.5"
 aes-gcm = "0.10"
 rand = "0.8"
@@ -21,8 +21,8 @@ hex = "0.4"
 usearch = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
-tokio = { version = "1", features = ["full"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tokio = { workspace = true }
 tantivy = "0.22"
 tantivy-jieba = "0.11"
 walkdir = "2"
@@ -33,13 +33,22 @@ serde_yaml = "0.9"
 tempfile = "3"
 pdf-extract = "0.8"
 zip = "2"
-ort = { version = "2.0.0-rc.12", features = ["cuda", "ndarray"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "tls-native", "copy-dylibs", "api-24", "download-binaries"] }
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
 hf-hub = "0.3"
-ndarray = "0.16"
 scraper = "0.21"
 urlencoding = "2"
-futures = "0.3"
+# 跨平台 PATH 二进制查找（替代 `which`/`where`，Win/Linux/macOS 一致行为）
+which = "6"
 # P1: 插件签名校验 (ed25519) —— 预留，PluginHub 上线前官方公钥占位
 ed25519-dalek = "2"
 base64 = "0.22"
+
+[features]
+default = []
+cuda = ["ort/cuda"]
+directml = ["ort/directml"]
+coreml = ["ort/coreml"]
+
+[lints]
+workspace = true

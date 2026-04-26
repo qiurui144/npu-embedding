@@ -100,7 +100,7 @@ cd attune
 cargo build --release
 # 产物：
 # target/release/attune         (CLI, 4.1 MB)
-# target/release/attune-server  (HTTP Server, 26 MB)
+# target/release/attune-server-headless  (HTTP Server, 26 MB)
 ```
 
 ### 2. 启动 Ollama（可选，用于语义搜索）
@@ -127,7 +127,7 @@ ollama pull bge-m3
 ### 4. HTTP Server 模式
 
 ```bash
-./target/release/attune-server --port 18900
+./target/release/attune-server-headless --port 18900
 # 浏览器打开 http://localhost:18900/ 使用 Web UI
 # Chrome 扩展改后端地址到 http://localhost:18900 即可对接
 ```
@@ -141,7 +141,7 @@ openssl req -x509 -newkey rsa:2048 \
   -days 365 -nodes -subj "/CN=your-nas.local"
 
 # 启动 HTTPS + Bearer 认证
-./target/release/attune-server \
+./target/release/attune-server-headless \
   --host 0.0.0.0 \
   --port 18900 \
   --tls-cert cert.pem \
@@ -343,7 +343,7 @@ Web UI 功能：setup / unlock / lock、搜索、录入、条目列表、Device 
 | Binary | 大小 | 用途 |
 |--------|------|------|
 | attune | 4.2 MB | CLI 管理工具（7 个子命令）|
-| attune-server | 28 MB | HTTP API Server（TLS + Web UI + 搜索引擎）|
+| attune-server-headless | 28 MB | HTTP API Server（TLS + Web UI + 搜索引擎）|
 
 大小构成：rustls 密码学 + tantivy 全文 + usearch C++ binding + Tokio + Axum。可通过 `strip=true` + `panic=abort` 进一步压缩。
 
@@ -427,6 +427,36 @@ rust/
 - **Batch A.2** ✅ AI 批注（4 角度 · 3 阶段 snippet 匹配 · JSON salvage）
 - **Batch B.1** ✅ 上下文压缩流水线（摘要缓存 + 三阶段锁释放 + token chip）
 - **Batch B.2** ✅ 批注加权 RAG（精确 label 白名单 + 权重统计返前端）
+
+## 桌面分发
+
+Attune 双轨发版，共享同一份 Rust 后端代码：
+
+| 形态 | 二进制 | 适用场景 |
+|------|--------|---------|
+| **Attune Desktop** | `apps/attune-desktop`（Tauri 2 壳） | 笔电用户 — 双击 MSI / deb 安装，原生窗口 + 托盘 + 拖拽 |
+| **Attune Server**（headless） | `crates/attune-server/bin/headless.rs`（`attune-server-headless`） | K3 一体机 / NAS / 服务器 — `attune-server-headless --host 0.0.0.0 ...` |
+
+### 本地构建
+
+```bash
+# Linux
+cd apps/attune-desktop
+cargo install --locked tauri-cli --version "^2.0"
+(cd ../../rust/crates/attune-server/ui && npm ci && npm run build)
+cargo tauri build --bundles deb,appimage
+
+# Windows（在 Windows 主机上跑）
+cargo tauri build --bundles nsis,msi
+```
+
+产物：`target/release/bundle/{deb,appimage,nsis,msi}/`。
+
+### 自动更新
+
+桌面端启动 30 秒后检查 `https://updates.attune.ai/desktop/{target}/{version}/latest.json`。
+更新包用 minisign 签名，公钥嵌入二进制。完整设计见
+`docs/superpowers/specs/2026-04-25-industry-attune-design.md` §6.6。
 
 ## License
 
