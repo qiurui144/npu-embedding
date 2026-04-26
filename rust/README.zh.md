@@ -238,6 +238,15 @@ Master Password (用户记忆)  +  Device Secret (设备文件, 256-bit 随机)
 | PATCH | `/items/{id}` | 更新条目 |
 | DELETE | `/items/{id}` | 软删除 |
 
+### Project / Case 卷宗（Sprint 1，详见 spec §2.1）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/POST | `/projects` | 列出 / 创建 Project（案件卷宗）|
+| GET/PATCH/DELETE | `/projects/{id}` | Project CRUD |
+| GET/POST/DELETE | `/projects/{id}/files` | 文件归属 Project |
+| GET | `/projects/{id}/timeline` | 案件时间线（事件 + 证据链）|
+
 ### 索引与系统
 
 | 方法 | 路径 | 说明 |

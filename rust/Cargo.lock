@@ -242,6 +242,7 @@ dependencies = [
  "ort",
  "pdf-extract",
  "rand 0.8.5",
+ "regex",
  "reqwest",
  "rusqlite",
  "scraper",

@@ -233,6 +233,15 @@ All endpoints are prefixed with `/api/v1/`. Localhost access is auth-free; remot
 | GET | `/search?q=&top_k=` | Hybrid search (BM25 + vector + RRF) |
 | GET/PATCH/DELETE | `/items[/{id}]` | Item CRUD |
 
+### Projects (Sprint 1, see spec §2.1)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET/POST | `/projects` | List / create Project (Case dossier) |
+| GET/PATCH/DELETE | `/projects/{id}` | Project CRUD |
+| GET/POST/DELETE | `/projects/{id}/files` | File assignment to Project |
+| GET | `/projects/{id}/timeline` | Case timeline (events + evidence) |
+
 ### Chat & sessions
 
 | Method | Path | Description |
