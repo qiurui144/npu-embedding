@@ -40,6 +40,18 @@ Attune 是**独立应用**，不依赖任何外部系统在线。硬约束：
 
 后续若需要互通（同一律所同时用 lawcontrol 和 attune），通过 **用户主动 export / import** 完成，不做后台自动桥接。Attune 不预设 lawcontrol 存在。
 
+## Git push 权限（本仓库特例）
+
+**全局规则禁止 git push，但本仓库（attune-core 开源主线）允许 push**（用户 2026-04-26 授权）：
+
+- ✅ 允许：`git push origin develop` / `git push origin <feature-branch>` / `git push origin <tag>`
+- ✅ 允许：`git push` PR 用的 feature 分支
+- ❌ **不允许**：`git push --force` / `git push --force-with-lease` 到 main 或 develop（其他分支按需问用户）
+- ❌ **不允许**：push 到 attune-pro 仓库（私有商业线，全局规则继续生效）
+- ❌ **不允许**：push 任何 lawcontrol 仓库（独立项目）
+
+push 前一律 `git status` + `git log --oneline origin/develop..HEAD` 复核要推什么；推完报告 commit SHA + 远端 URL。
+
 
 ## 技术栈（Python 原型线）
 
