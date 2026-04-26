@@ -1,5 +1,8 @@
 // npu-vault/crates/vault-core/src/store.rs
 
+mod types;
+pub use types::*;
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -1082,177 +1085,7 @@ impl Store {
 }
 
 // --- 数据结构 ---
-
-struct RawItem {
-    id: String,
-    title: String,
-    content: Vec<u8>,
-    url: Option<String>,
-    source_type: String,
-    domain: Option<String>,
-    tags: Option<Vec<u8>>,
-    created_at: String,
-    updated_at: String,
-}
-
-impl RawItem {
-    fn decrypt(self, dek: &Key32) -> Result<DecryptedItem> {
-        let content = String::from_utf8(crypto::decrypt(dek, &self.content)?)
-            .map_err(|e| VaultError::Crypto(format!("utf8: {e}")))?;
-        // tags 字段兼容两种历史格式：
-        //   1. 老版：Vec<String>（手工标签）
-        //   2. 新版：ClassificationResult（AI 分类结果，是 JSON map 带 core/universal/plugin/user_tags）
-        // 新版反序列化为 Vec<String> 会 "invalid type: map, expected a sequence"
-        // 导致整条 item 无法 decrypt，进而把 get_item / 搜索全链路阻塞。
-        // 策略：先尝试 Vec<String>；失败则解为 Value 提取 user_tags / 或返回空 Vec。
-        let tags: Option<Vec<String>> = match self.tags {
-            Some(ref enc) => {
-                let plain = crypto::decrypt(dek, enc)?;
-                let parsed: Option<Vec<String>> = serde_json::from_slice::<Vec<String>>(&plain)
-                    .ok()
-                    .or_else(|| {
-                        // 新版：ClassificationResult 格式。读取 user_tags（如果有）或降级为空
-                        serde_json::from_slice::<serde_json::Value>(&plain).ok().map(|v| {
-                            v.get("user_tags")
-                                .and_then(|t| t.as_array())
-                                .map(|arr| arr.iter()
-                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                    .collect())
-                                .unwrap_or_default()
-                        })
-                    });
-                parsed
-            }
-            None => None,
-        };
-        Ok(DecryptedItem {
-            id: self.id,
-            title: self.title,
-            content,
-            url: self.url,
-            source_type: self.source_type,
-            domain: self.domain,
-            tags,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-        })
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DecryptedItem {
-    pub id: String,
-    pub title: String,
-    pub content: String,
-    pub url: Option<String>,
-    pub source_type: String,
-    pub domain: Option<String>,
-    pub tags: Option<Vec<String>>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ItemSummary {
-    pub id: String,
-    pub title: String,
-    pub source_type: String,
-    pub domain: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct StaleItemSummary {
-    pub id: String,
-    pub title: String,
-    pub source_type: String,
-    pub updated_at: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct ItemStats {
-    pub id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub chunk_count: i64,
-    pub embedding_pending: i64,
-    pub embedding_done: i64,
-}
-
-/// Embedding 队列任务
-#[derive(Debug)]
-pub struct QueueTask {
-    pub id: i64,
-    pub item_id: String,
-    pub chunk_idx: i32,
-    pub chunk_text: String,
-    pub level: i32,
-    pub section_idx: i32,
-    pub priority: i32,
-    pub attempts: i32,
-    pub task_type: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct BoundDirRow {
-    pub id: String,
-    pub path: String,
-    pub recursive: bool,
-    pub file_types: String,
-    pub last_scan: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SearchHistoryRow {
-    pub id: i64,
-    pub query: String,
-    pub result_count: usize,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct IndexedFileRow {
-    pub id: String,
-    pub dir_id: String,
-    pub path: String,
-    pub file_hash: String,
-    pub item_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationSummary {
-    pub id: String,
-    pub title: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Citation {
-    pub item_id: String,
-    pub title: String,
-    pub relevance: f32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ConvMessage {
-    pub id: String,
-    pub role: String,
-    pub content: String,
-    pub citations: Vec<Citation>,
-    pub created_at: String,
-}
-
-/// 技能进化信号：一次本地搜索失败记录
-#[derive(Debug, Clone)]
-pub struct SkillSignal {
-    pub id: i64,
-    pub query: String,
-    pub knowledge_count: usize,
-    pub web_used: bool,
-    pub created_at: String,
-}
+// 共享 DTO / 行映射结构体已抽到 store/types.rs，glob re-export 见 mod 顶部。
 
 impl Store {
     /// 记录一次本地搜索失败信号（非阻塞写入，失败时静默忽略）
@@ -1382,37 +1215,7 @@ impl Store {
 // 自动生成批注。AI 批注（source='ai'）由独立的"AI 分析"按钮触发，属于 💰 层，
 // 本批暂不实现（后续 Batch A.2）。
 
-/// 批注记录 — content 已解密
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Annotation {
-    pub id: String,
-    pub item_id: String,
-    pub offset_start: i64,
-    pub offset_end: i64,
-    pub text_snippet: String,
-    pub label: Option<String>,
-    pub color: String,
-    /// 批注内容（用户自由输入），空 = 纯高亮无附注
-    pub content: String,
-    /// user | ai
-    pub source: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// 创建/更新批注时的字段（id + 时间戳由服务器填充）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnnotationInput {
-    pub offset_start: i64,
-    pub offset_end: i64,
-    pub text_snippet: String,
-    pub label: Option<String>,
-    pub color: String,
-    pub content: String,
-    /// 默认 "user"；AI 路径会传 "ai"
-    #[serde(default)]
-    pub source: Option<String>,
-}
+// Annotation / AnnotationInput 结构定义已搬到 store/types.rs。
 
 impl Store {
     /// 创建批注。生成 UUID，content 字段加密保存（保护个人思考）。
