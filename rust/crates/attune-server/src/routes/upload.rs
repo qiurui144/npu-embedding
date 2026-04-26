@@ -231,6 +231,16 @@ pub async fn upload_file(
         if matched.is_empty() {
             return; // 没装任何 file_added workflow plugin
         }
+        // Sprint 2 Phase D：拉 vault dek_db 透传给 workflow（write_annotation 需要加密 content）。
+        // vault 在前面 state() 检查中已确认 unlocked，理论上 dek_db() 不会失败；
+        // 兜底：拿不到 dek 就跳过整批 workflow（不静默退化为 stub 写入）。
+        let dek = match vault_guard.dek_db() {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!("workflow trigger skipped: vault dek_db unavailable: {e}");
+                return;
+            }
+        };
         for (plugin_id, workflow) in matched {
             let mut data = std::collections::BTreeMap::new();
             data.insert("file_id".into(), serde_json::json!(item_id_for_wf));
@@ -243,6 +253,7 @@ pub async fn upload_file(
                 &workflow,
                 &event,
                 Some(vault_guard.store()),
+                Some(&dek),
             ) {
                 Ok(_result) => {
                     let payload = serde_json::json!({

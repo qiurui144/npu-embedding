@@ -37,19 +37,33 @@ pub async fn vault_setup(
     State(state): State<SharedState>,
     Json(body): Json<SetupRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    {
+    // setup 成功后内部走一次 lock+unlock，复用 unlock 的 token 颁发路径，
+    // 让首次安装直接拿到可用 token（避免客户端必须 restart server 再 unlock）。
+    let token = {
         let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
         vault.setup(&body.password).map_err(|e| {
             (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()})))
         })?;
-    }
+        // setup 自动 Unlocked；先 lock 再 unlock，复用 unlock token 颁发路径。
+        // 首次安装一次性操作，多一次 Argon2id 派生可接受。
+        vault.lock().map_err(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        })?;
+        vault.unlock(&body.password).map_err(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()})))
+        })?
+    };
     // Initialize search engines after vault setup (vault mutex released)
     state.init_search_engines();
     crate::state::AppState::start_classify_worker(state.clone());
     crate::state::AppState::start_rescan_worker(state.clone());
     crate::state::AppState::start_queue_worker(state.clone());
     crate::state::AppState::start_skill_evolver(state.clone());
-    Ok(Json(serde_json::json!({"status": "ok", "state": "unlocked"})))
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "state": "unlocked",
+        "token": token,
+    })))
 }
 
 pub async fn vault_unlock(
