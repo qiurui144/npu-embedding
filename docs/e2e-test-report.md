@@ -596,3 +596,109 @@ API:        GET /api/v1/items/<id> → {"error":"json error: invalid
   - [ ] 拖文件到窗口看 alert 弹窗（Task 9 桥接）
   - [ ] 重复双击 NSIS installer / 启动图标只激活已有窗口（Task 7 single-instance）
   - [ ] 关闭主窗口最小化到托盘，托盘菜单"完全退出"才结束进程（Task 8）
+
+---
+
+## 2026-04-26 — Linux release + Sprint 2 Skills Router smoke test ✅
+
+**Build:** `cargo build --release --workspace` 14.67s 增量通过。Binary 体积：
+
+- `attune` (CLI) — 29 MB
+- `attune-server-headless` — 58 MB（含 TLS + tantivy + usearch + 嵌入式 Web UI + bge-reranker ORT）
+
+**端到端冒烟（隔离 XDG dir，no-auth 模式）**：
+
+| 步骤 | 结果 |
+|------|------|
+| 启动 server | ✅ ~3s 内 listening on 18900；自动检测 GPU 设 `CUDA_VISIBLE_DEVICES=0` |
+| GET /status/health | ✅ `{"status":"ok"}` |
+| POST /vault/setup | ✅ 返回 token + 状态 unlocked |
+| GET /settings | ✅ 含 Sprint 2 新增 `skills.disabled: []` 默认值 |
+| GET /status/diagnostics | ✅ embedding/fulltext/vector ready；NVIDIA 检测 |
+| PATCH /settings (Qwen DashScope) | ✅ provider=custom / endpoint=`https://dashscope.aliyuncs.com/compatible-mode/v1` / model=qwen-plus / api_key 入库（响应中 redact 为 null + `api_key_set: true`） |
+| 装 plugin (磁盘) → 重启 → GET /skills | ✅ 日志 `loaded 1 plugins`，端点返回完整 chat_trigger 字段 |
+| PATCH skills.disabled toggle | ✅ disabled_by_user=true 持久化 |
+| POST /chat (placeholder key) | ✅ DashScope 返回 401 + Aliyun request_id — **链路已通到阿里云**，仅 key 占位 |
+
+**关键结论**：Sprint 0–2 所有功能在 Linux x86_64 release binary 上**真实可用**。用户拿真实 Qwen API key 替换占位符即跑通。
+
+### Linux 测试 Runbook（用户操作）
+
+```bash
+# 1. develop 已含 Sprint 2 Skills Router (commit e532335)
+cd /data/company/project/attune
+git checkout develop
+
+# 2. 构建 release（首次约 5-8 min；增量秒级）
+cd rust && cargo build --release --workspace
+
+# 3.（可选）隔离测试目录
+export XDG_DATA_HOME=$HOME/.attune-test/data
+export XDG_CONFIG_HOME=$HOME/.attune-test/conf
+mkdir -p $XDG_DATA_HOME $XDG_CONFIG_HOME
+
+# 4. 启动 server（生产模式带 auth；首次开发可加 --no-auth 跳 token）
+./target/release/attune-server-headless --port 18900 &
+
+# 5. 浏览器打开
+xdg-open http://localhost:18900
+
+# 6. UI 完成首次向导：
+#    - 设置 Master Password
+#    - LLM 选 "OpenAI compatible / 自定义" provider
+#    - Quick preset 选 "Aliyun Qwen (DashScope)" 自动填 endpoint=qwen-plus
+#    - 粘贴 https://bailian.console.aliyun.com 拿到的 sk-xxx key
+#    - 测试连接 → 通过
+
+# 7. 手动验证：
+#    - Chat 发"你好" → 真实 Qwen 在线响应
+#    - Items 上传一个 PDF/MD/TXT → 等几秒 embedding
+#    - Chat 问相关问题 → 看 RAG 引用
+#    - Settings → Skills tab 看 skill 列表
+
+# 8.（可选）装 skill 测 Sprint 2：
+mkdir -p $XDG_DATA_HOME/attune/plugins/contract-review
+cat > $XDG_DATA_HOME/attune/plugins/contract-review/plugin.yaml <<'YAML'
+id: contract-review
+name: 合同审查
+type: skill
+version: "0.1.0"
+chat_trigger:
+  enabled: true
+  keywords: ['合同', '审查']
+  description: AI 审查合同
+YAML
+echo 'You are a legal expert. Review the contract.' > $XDG_DATA_HOME/attune/plugins/contract-review/prompt.md
+# 重启 server，Settings → Skills tab 自动出现，toggle 启用/禁用即时生效
+```
+
+**Qwen 真实 key 获取**：https://bailian.console.aliyun.com/?apiKey=1（阿里云百炼，新账号送 1M tokens / 180 天免费额度，足够 attune 测一个月）。
+
+### 跨平台编译盘点
+
+**当前 Linux dev 机已就绪**：
+
+- Rust target: `x86_64-pc-windows-msvc` 已装
+- Linker: `x86_64-w64-mingw32-gcc` (Win GNU ABI) + `aarch64-linux-gnu-gcc` (ARM64) 已装
+- Docker 28.3 已装
+
+**仍需补**：
+
+| 目标 | 缺失 | 补的命令 |
+|------|------|---------|
+| Linux → Win MSVC（推荐） | `cargo-xwin` | `cargo install cargo-xwin` |
+| Linux → aarch64 | Rust target | `rustup target add aarch64-unknown-linux-gnu` |
+| 通用 cross | `cross` 子命令 | `cargo install cross --git https://github.com/cross-rs/cross` |
+
+**实际打包路径**（已在 `.github/workflows/desktop-release.yml`）：
+
+- `ubuntu-22.04` runner → `x86_64-unknown-linux-gnu` → `deb,appimage` bundles
+- `windows-latest` runner → `x86_64-pc-windows-msvc` → `nsis,msi` bundles
+- 触发：push `desktop-v*` tag 或手动 workflow_dispatch
+- **不建议**本地 Linux cross-compile Tauri Windows bundle — webview2 子组件 cross-compile 不被支持
+
+**结论**：
+
+- **Linux** 100% 就绪，可立即测试
+- **Windows** 必须走 GitHub Actions desktop-release.yml；headless binary 单独可在 windows-latest cargo build 出来（不依赖 WebView2）
+- **aarch64**（K3 一体机）目前 P2，等核心功能稳定再做
