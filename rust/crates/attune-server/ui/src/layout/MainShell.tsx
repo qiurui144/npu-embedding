@@ -11,6 +11,7 @@ import {
   ProjectsView,
   RemoteView,
   KnowledgeView,
+  SkillsView,
   SettingsView,
 } from '../views';
 import { currentView } from '../store/signals';
@@ -40,6 +41,7 @@ export function MainShell(): JSX.Element {
         {view === 'projects' && <ProjectsView />}
         {view === 'remote' && <RemoteView />}
         {view === 'knowledge' && <KnowledgeView />}
+        {view === 'skills' && <SkillsView />}
         {view === 'settings' && <SettingsView />}
       </main>
       <DrawerHost />

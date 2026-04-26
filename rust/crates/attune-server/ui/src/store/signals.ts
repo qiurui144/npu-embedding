@@ -30,6 +30,7 @@ export type View =
   | 'projects'
   | 'remote'
   | 'knowledge'
+  | 'skills'
   | 'settings';
 export const currentView = signal<View>('chat');
 
