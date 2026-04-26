@@ -10,6 +10,62 @@ import { setLocale, currentLocale } from '../i18n';
 import { loadSettings, patchSettings } from '../hooks/useSettings';
 import { api, clearToken } from '../store/api';
 
+/** LLM 厂商快捷预设 — 选中后自动填 endpoint + model，用户只需贴 API key。 */
+type LlmPresetKey =
+  | 'custom'
+  | 'deepseek'
+  | 'qwen'
+  | 'glm'
+  | 'kimi'
+  | 'baichuan'
+  | 'ollama'
+  | 'openai';
+
+interface LlmPreset {
+  label: string;
+  endpoint: string;
+  model: string;
+}
+
+const LLM_PRESETS: Record<LlmPresetKey, LlmPreset> = {
+  custom: { label: '自定义', endpoint: '', model: '' },
+  deepseek: {
+    label: 'DeepSeek (¥1/M tok, OpenAI 兼容)',
+    endpoint: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+  },
+  qwen: {
+    label: '阿里百炼 / Qwen (¥4/M tok)',
+    endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+  },
+  glm: {
+    label: '智谱 GLM (¥50/M tok)',
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-plus',
+  },
+  kimi: {
+    label: '月之暗面 Kimi (¥12/M tok)',
+    endpoint: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+  },
+  baichuan: {
+    label: '百川 (¥15/M tok)',
+    endpoint: 'https://api.baichuan-ai.com/v1',
+    model: 'Baichuan4-Turbo',
+  },
+  ollama: {
+    label: 'Ollama 本地（免费）',
+    endpoint: 'http://localhost:11434/v1',
+    model: 'qwen2.5:7b',
+  },
+  openai: {
+    label: 'OpenAI (~¥3/M tok)',
+    endpoint: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+  },
+};
+
 type SettingsTab = 'general' | 'ai' | 'data' | 'privacy' | 'about';
 
 const TABS: Array<{ key: SettingsTab; icon: string; label: string }> = [
@@ -169,21 +225,117 @@ function AIPanel(): JSX.Element {
   const llm = useComputed(() => (settings.value?.llm as Record<string, unknown>) ?? {});
   const emb = useComputed(() => (settings.value?.embedding as Record<string, unknown>) ?? {});
 
+  // 编辑态（草稿值，保存按钮才下发）
+  const presetKey = useSignal<LlmPresetKey>('custom');
+  const draftEndpoint = useSignal<string>('');
+  const draftModel = useSignal<string>('');
+  const draftApiKey = useSignal<string>('');
+  const saving = useSignal(false);
+
+  // 同步 server 值到草稿（首次加载 / 外部更新时）
+  useEffect(() => {
+    draftEndpoint.value = (llm.value.endpoint as string) ?? '';
+    draftModel.value = (llm.value.model as string) ?? '';
+  }, [llm.value.endpoint, llm.value.model]);
+
+  const onPresetChange = (key: LlmPresetKey): void => {
+    presetKey.value = key;
+    if (key === 'custom') return; // 自定义：不动现有值
+    const preset = LLM_PRESETS[key];
+    draftEndpoint.value = preset.endpoint;
+    draftModel.value = preset.model;
+  };
+
+  const onSave = async (): Promise<void> => {
+    saving.value = true;
+    try {
+      const patch: Record<string, unknown> = {
+        llm: {
+          ...(settings.value?.llm as Record<string, unknown>),
+          endpoint: draftEndpoint.value,
+          model: draftModel.value,
+        },
+      };
+      // 只有用户填了新 key 才下发（避免覆盖已有 key）
+      if (draftApiKey.value.trim()) {
+        (patch.llm as Record<string, unknown>).api_key = draftApiKey.value.trim();
+      }
+      const ok = await patchSettings(patch);
+      if (ok) {
+        draftApiKey.value = ''; // 清空输入框（key 已加密落盘）
+        toast('success', '已保存 LLM 配置');
+      } else {
+        toast('error', '保存失败');
+      }
+    } finally {
+      saving.value = false;
+    }
+  };
+
   return (
     <>
       <Section title="LLM 后端">
+        <SettingRow label="快捷预设">
+          <select
+            value={presetKey.value}
+            onChange={(e) => onPresetChange(e.currentTarget.value as LlmPresetKey)}
+            style={{ ...selectStyle, minWidth: 240 }}
+            aria-label="LLM 厂商快捷预设"
+          >
+            {(Object.keys(LLM_PRESETS) as LlmPresetKey[]).map((k) => (
+              <option key={k} value={k}>
+                {LLM_PRESETS[k].label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
         <SettingRow label="Endpoint">
-          <code style={codeStyle}>
-            {(llm.value.endpoint as string) ?? '（本地 Ollama）'}
-          </code>
+          <input
+            type="text"
+            value={draftEndpoint.value}
+            onInput={(e) => (draftEndpoint.value = e.currentTarget.value)}
+            placeholder="https://api.example.com/v1"
+            style={inputStyle}
+          />
         </SettingRow>
         <SettingRow label="Chat 模型">
-          <code style={codeStyle}>{(llm.value.model as string) ?? '—'}</code>
+          <input
+            type="text"
+            value={draftModel.value}
+            onInput={(e) => (draftModel.value = e.currentTarget.value)}
+            placeholder="例：deepseek-chat / qwen-plus / gpt-4o-mini"
+            style={inputStyle}
+          />
         </SettingRow>
         <SettingRow label="API Key">
-          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
-            {llm.value.api_key_set ? '●●●●● 已配置' : '未配置'}
-          </span>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+            <input
+              type="password"
+              value={draftApiKey.value}
+              onInput={(e) => (draftApiKey.value = e.currentTarget.value)}
+              placeholder={llm.value.api_key_set ? '已配置（留空保留）' : '粘贴 sk-... '}
+              style={inputStyle}
+            />
+            <span
+              style={{
+                fontSize: 'var(--text-xs)',
+                color: 'var(--color-text-secondary)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {llm.value.api_key_set ? '●●●●●' : ''}
+            </span>
+          </div>
+        </SettingRow>
+        <SettingRow label="">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void onSave()}
+            disabled={saving.value}
+          >
+            {saving.value ? '保存中…' : '💾 保存 LLM 配置'}
+          </Button>
         </SettingRow>
       </Section>
 
@@ -340,6 +492,17 @@ const selectStyle: JSX.CSSProperties = {
   background: 'var(--color-surface)',
   border: '1px solid var(--color-border)',
   borderRadius: 'var(--radius-sm)',
+};
+
+const inputStyle: JSX.CSSProperties = {
+  padding: '4px var(--space-2)',
+  fontSize: 'var(--text-sm)',
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-sm)',
+  color: 'var(--color-text)',
+  minWidth: 280,
+  fontFamily: 'var(--font-mono)',
 };
 
 const codeStyle: JSX.CSSProperties = {

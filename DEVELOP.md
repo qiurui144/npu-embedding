@@ -5,6 +5,107 @@
 > - **Rust 商用线**位于 [`rust/`](rust/)，有独立的 [`DEVELOP.md`](rust/DEVELOP.md)
 > - 两者共享 API 协议（`/api/v1/*`），Chrome 扩展可任意切换后端
 
+## 分支模型（GitFlow Lite）
+
+仓库采用简化的 GitFlow，**只有两条长期分支**：
+
+| 分支 | 用途 | 推送方式 |
+|------|------|---------|
+| `main` | **稳定发布线**。每次合入对应一个 git tag（`vX.Y.Z`）。生产部署、外部用户安装包从这里出。 | 仅通过 `develop → main` PR + tag 合入 |
+| `develop` | **集成线**。日常开发汇总，所有 feature/* 在这里集成验证后再升 `main`。 | 仅通过 `feature/* → develop` PR 合入 |
+| `feature/<name>` | **短期特性分支**。一个 feature/sprint 一条，merge 后**立即删除**（远端 + 本地）。命名约定：`feature/sprint-N-<thing>` 或 `feature/<topic>`。 | 本地开发 → push → PR → squash merge |
+
+### Tag 时机
+
+- **`vX.Y.Z-alpha.N`**：`develop` 上完成一个 sprint 的成果聚合，先打 alpha 跑内部 dogfood / Playwright E2E。例：`v0.6.0-alpha.1`
+- **`vX.Y.Z-beta.N`**：alpha 修完反馈后，外部小范围灰度
+- **`vX.Y.Z-rc.N`**：候选发布，准备合入 `main`
+- **`vX.Y.Z`**：正式发布。**只在 `main` 分支打**。tag message 列出累积 commit 数 + 核心能力清单 + 测试统计
+
+### 远端清理
+
+feature 分支 squash merge 后**立刻删远端**，避免分支墓地：
+
+```bash
+git push origin --delete feature/<name>
+git fetch --prune
+git branch -d feature/<name>     # 本地删
+```
+
+GitHub 网页端勾选"Delete branch"也可以。
+
+## 编译命令汇总
+
+### Rust 商用线
+
+```bash
+# 本地原生编译（Linux x86_64 / Windows x86_64 / macOS）
+cd rust && cargo build --release
+# 产物: rust/target/release/attune-server (~30 MB 静态二进制)
+
+# 嵌入式 Web UI 一同编译（include_str! 自动打包）
+cd rust && cargo build --release -p attune-server
+
+# Linux → Windows 交叉编译（需要 cargo-xwin）
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+cd rust && cargo xwin build --release --target x86_64-pc-windows-msvc
+
+# Linux → aarch64（K3 一体机 / 树莓派）
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+rustup target add aarch64-unknown-linux-gnu
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+  cargo build --release --target aarch64-unknown-linux-gnu
+
+# Tauri 2 Desktop 打包（Win MSI / Linux deb / AppImage）
+cd apps/desktop && cargo tauri build
+# Linux 产物: src-tauri/target/release/bundle/{deb,appimage}/*
+# Windows 产物: src-tauri/target/release/bundle/msi/*.msi（需在 Windows 上跑）
+```
+
+### Python 原型线
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e ".[dev]"
+
+# AppImage（Linux）
+cd packaging && bash build-appimage.sh
+
+# NSIS EXE（Windows，需要 Wine 或在 Windows 上跑）
+cd packaging && makensis attune.nsi
+```
+
+### Web UI（Preact + Vite）
+
+```bash
+cd rust/crates/attune-server/ui
+npm install --registry https://registry.npmmirror.com
+npm run build         # 产物 → dist/，会被 attune-server cargo build 通过 include_str! 内嵌
+```
+
+### Chrome 扩展
+
+```bash
+cd extension
+npm install --registry https://registry.npmmirror.com
+npm run build         # 三阶段构建（pages / content IIFE / background ESM）
+# 产物: extension/dist/，加载到 chrome://extensions 测试
+```
+
+### 验证测试
+
+```bash
+# Rust 全量
+cd rust && cargo test --release --workspace -- --test-threads=2
+
+# Python 全量
+pytest tests/ -v
+
+# Playwright E2E（扩展 + UI）
+cd rust/crates/attune-server/ui && npm run test:e2e
+```
+
 ## 环境搭建
 
 ```bash
