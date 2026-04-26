@@ -3,6 +3,7 @@
 //! 设计：fail-fast；step output 记到 runtime state；ref 解析 `$event.x` 和 `$step_id.y`。
 //! Phase C 不持久化 state（进程重启不可恢复）。
 
+use crate::crypto::Key32;
 use crate::store::Store;
 use crate::workflow::ops::run_deterministic;
 use crate::workflow::schema::{Workflow, WorkflowStep};
@@ -37,6 +38,7 @@ pub fn run_workflow(
     wf: &Workflow,
     event: &WorkflowEvent,
     store: Option<&Store>,
+    dek: Option<&Key32>,
 ) -> Result<WorkflowResult, WorkflowError> {
     let mut state: BTreeMap<String, Value> = BTreeMap::new();
 
@@ -54,10 +56,12 @@ pub fn run_workflow(
             }
             WorkflowStep::Deterministic(d) => {
                 let resolved = resolve_inputs(&d.input, &state, event);
-                let output_value = run_deterministic(&d.operation, resolved, store)
-                    .map_err(|e| WorkflowError::StepFailed {
-                        step_id: d.id.clone(),
-                        cause: e,
+                let output_value =
+                    run_deterministic(&d.operation, resolved, store, dek).map_err(|e| {
+                        WorkflowError::StepFailed {
+                            step_id: d.id.clone(),
+                            cause: e,
+                        }
                     })?;
                 if let Some(out_key) = &d.output {
                     state.insert(out_key.clone(), output_value);

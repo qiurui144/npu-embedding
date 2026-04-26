@@ -1,30 +1,29 @@
 //! Workflow deterministic operations（spec §3.3）。
 //!
-//! Phase C 实现的 op：
+//! 当前实现的 op：
 //! - `echo_input` (test-only)
 //! - `find_overlap` — 列出该 project 已归档文件作为重叠候选（不调 AI；Sprint 2 接 LLM
 //!   做真正的实体重叠分析）
-//! - `write_annotation` — 写 AI 批注 + 在 project timeline 留痕
+//! - `write_annotation` — 真持久化 AI 批注（`Store::create_annotation` + 加密）+
+//!   project timeline 留痕。Sprint 2 Phase D 起从 stub 升级为真写。
 //!
-//! ### dek 缺位说明（Phase C 妥协）
+//! ### dek 通道
 //!
-//! `Store::create_annotation` 签名要求 `&Key32`（vault DEK，用于加密 content）。
-//! 但当前 `run_deterministic` 只接 `Option<&Store>`，没有 dek 通道 —— Sprint 2 把
-//! workflow 接到真实运行时（Intent Router + vault context）后会扩展签名。
-//!
-//! 在此之前，`write_annotation` 只走 timeline append（不需要 dek）+ 返回一个 stub
-//! annotation_id。这让 evidence_chain workflow 端到端能跑通，但批注表本身不会有新行。
-//! Sprint 2 接入 vault context 时，把 stub 改成真调 `create_annotation(dek, ..)` 即可。
+//! `Store::create_annotation` 需要 `&Key32`（vault DEK，用于加密 content）。
+//! `run_deterministic` 通过 `dek: Option<&Key32>` 透传 — 调用方（HTTP 路由 / 后台 spawn）
+//! 在 vault unlocked 时拿 `vault.dek_db()` 注入；vault locked 或调用方不传时，
+//! 需要 dek 的 op（`write_annotation`）会显式 fail。
 
-use crate::store::Store;
+use crate::crypto::Key32;
+use crate::store::{AnnotationInput, Store};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use uuid::Uuid;
 
 pub fn run_deterministic(
     operation: &str,
     inputs: BTreeMap<String, Value>,
     store: Option<&Store>,
+    dek: Option<&Key32>,
 ) -> Result<Value, String> {
     match operation {
         "echo_input" => {
@@ -32,7 +31,7 @@ pub fn run_deterministic(
             Ok(serde_json::to_value(inputs).unwrap_or(Value::Null))
         }
         "find_overlap" => find_overlap(inputs, store),
-        "write_annotation" => write_annotation(inputs, store),
+        "write_annotation" => write_annotation(inputs, store, dek),
         _ => Err(format!("unknown deterministic op: {operation}")),
     }
 }
@@ -71,22 +70,23 @@ fn find_overlap(inputs: BTreeMap<String, Value>, store: Option<&Store>) -> Resul
     }))
 }
 
-/// `write_annotation`：当前 Phase C 实现 = timeline 留痕 + stub annotation_id。
+/// `write_annotation`：真持久化 AI 批注（Sprint 2 Phase D — 不再是 stub）。
 ///
 /// 输入：`{ item_id, body, source ('user'|'ai', default 'ai'), project_id (optional) }`
-/// 输出：`{ annotation_id: string, persisted: bool }`
+/// 输出：`{ annotation_id: string, item_id, source, persisted: true }`
 ///
-/// `persisted=false` 时调用方知道该批注还没真正写到 annotations 表 —— Sprint 2 接 vault
-/// dek 后改为真调 `Store::create_annotation` 并设 `persisted=true`。
+/// 必需：vault unlocked + dek（`Some(&Key32)`）。dek 缺位时显式 fail，避免静默退化为 stub。
+/// 可选：`project_id` 存在时同步 append timeline。
 fn write_annotation(
     inputs: BTreeMap<String, Value>,
     store: Option<&Store>,
+    dek: Option<&Key32>,
 ) -> Result<Value, String> {
     let item_id = inputs
         .get("item_id")
         .and_then(|v| v.as_str())
         .ok_or("write_annotation: missing item_id")?;
-    let _body = inputs
+    let body = inputs
         .get("body")
         .and_then(|v| v.as_str())
         .ok_or("write_annotation: missing body")?;
@@ -100,11 +100,29 @@ fn write_annotation(
         ));
     }
     let store = store.ok_or("write_annotation: store required")?;
+    let dek = dek.ok_or("write_annotation: dek required (vault must be unlocked)")?;
 
-    // Phase C: stub id；Sprint 2 接 dek 后改为 store.create_annotation 真返回 id。
-    let annotation_id = format!("stub-{}", Uuid::new_v4().simple());
+    // AI 批注覆盖整个 item content（offset 0..len），text_snippet 取 body 前 100 字符做预览。
+    // body 当作 annotation content 加密入库；source='ai' 标识 AI 路径写入。
+    let body_chars: Vec<char> = body.chars().collect();
+    let body_char_len = body_chars.len() as i64;
+    let snippet: String = body_chars.iter().take(100).collect();
 
-    // timeline append 不需要 dek，可以真做。失败不致命（project_id 缺失或不存在均忽略）。
+    let input = AnnotationInput {
+        offset_start: 0,
+        offset_end: body_char_len,
+        text_snippet: snippet,
+        label: None,
+        color: "yellow".into(),
+        content: body.to_string(),
+        source: Some(source.to_string()),
+    };
+
+    let annotation_id = store
+        .create_annotation(dek, item_id, &input)
+        .map_err(|e| format!("write_annotation: {e}"))?;
+
+    // timeline append：失败不致命（project_id 缺失或不存在均忽略）。
     if let Some(pid) = inputs.get("project_id").and_then(|v| v.as_str()) {
         let _ = store.append_timeline(pid, "ai_inference", None);
     }
@@ -113,6 +131,6 @@ fn write_annotation(
         "annotation_id": annotation_id,
         "item_id": item_id,
         "source": source,
-        "persisted": false,
+        "persisted": true,
     }))
 }
