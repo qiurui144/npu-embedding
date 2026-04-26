@@ -252,6 +252,47 @@ ingest:
 | 模型 | `~/.local/share/attune/models/` | `%LOCALAPPDATA%\attune\models\` |
 | 配置 | `~/.config/attune/config.yaml` | `%APPDATA%\attune\config.yaml` |
 
+## 写自己的 Skill（免费版 + Pro 版机制相同）
+
+**Skill** 是一个小型 YAML + prompt 包，当你 chat 消息命中关键词或正则时 Attune 会主动建议运行它。免费版与 Pro 版加载机制完全一致 — Pro 只是预装更多 skill。**整个流程不需要手编 YAML：写好 / 下载到目录后，在 Settings → Skills 里 toggle 启用就行。**
+
+**1. 建目录**
+
+```
+~/.local/share/attune/plugins/<plugin-id>/
+```
+
+（Windows：`%APPDATA%\attune\plugins\<plugin-id>\`）
+
+**2. 写 `plugin.yaml`**
+
+```yaml
+id: my-plugin/contract-quick-review
+name: 快速合同审查
+type: skill
+version: "0.1.0"
+description: 30 秒读完合同关键风险
+
+chat_trigger:
+  enabled: true            # 插件作者可发布"默认禁用"
+  needs_confirm: true      # 命中后弹确认再跑
+  priority: 5              # 多 skill 同时命中时数字大的优先
+  patterns:
+    - '帮我.*审查.*合同'      # 任一正则命中即匹配
+  keywords: ['审查合同', '合同风险']
+  min_keyword_match: 1     # 关键词最少命中数
+  exclude_patterns: ['起草']  # 命中即否决（即使 patterns/keywords 命中）
+  requires_document: true  # 只在 chat 上下文含文件时触发
+```
+
+**3. 写 `prompt.md`** — 这是 skill 真正运行时加载给 LLM 的提示词。
+
+**4. 重启 Attune**，让插件注册器重扫目录。
+
+**5. 打开 Settings → Skills 标签**。新 skill 会列出，关键词高亮显示，toggle 启用 / 禁用即时生效，全程不再碰 YAML。
+
+**分发给别人**：把目录打包为 `<plugin-id>.attunepkg`，对方解压到同样的 plugins 目录即装即用。Pro 版的行业 skill 集（律师 / 售前 / 学术）走完全一样的路径，只是出厂预装。
+
 ## License
 
 MIT

@@ -82,6 +82,40 @@ pub async fn chat(
         let _ = state.recommendation_tx.send(payload);
     }
 
+    // Sprint 2 Phase C: Skills Router — 纯 observer，匹配 plugin skill 后通过 broadcast 推 ws skill_suggested
+    // 不影响主流程；disabled 集合从 vault settings.skills.disabled 读取（Task 4），
+    // has_pending_doc 留 false（Task 5 后由 chat context 决定）
+    {
+        let registry = state.plugin_registry.clone();
+        // 从 vault metadata 读 settings.skills.disabled；锁失败 / 读失败 / 解析失败均回退空集合
+        // （observer 路径不能阻断主流程）
+        let disabled: std::collections::HashSet<String> = {
+            let bytes = match state.vault.lock() {
+                Ok(vault) => vault.store().get_meta("app_settings").ok().flatten(),
+                Err(_) => None,
+            };
+            bytes
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| v.get("skills")
+                    .and_then(|s| s.get("disabled"))
+                    .and_then(|d| d.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect()))
+                .unwrap_or_default()
+        };
+        let has_pending_doc = false;
+        let router = attune_core::intent_router::IntentRouter::new(&registry);
+        let matches = router.route(&body.message, has_pending_doc, &disabled);
+        if !matches.is_empty() {
+            let payload = serde_json::json!({
+                "type": "skill_suggested",
+                "trigger": "chat_intent",
+                "matches": matches,
+                "user_message": body.message,
+            });
+            let _ = state.recommendation_tx.send(payload);
+        }
+    }
+
     // Check LLM availability
     let llm = state.llm.lock()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "llm lock poisoned"}))))?

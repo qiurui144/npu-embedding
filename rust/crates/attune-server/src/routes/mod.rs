@@ -16,6 +16,7 @@ pub mod projects;
 pub mod remote;
 pub mod search;
 pub mod settings;
+pub mod skills;
 pub mod status;
 pub mod tags;
 pub mod ui;

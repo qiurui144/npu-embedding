@@ -14,6 +14,7 @@ pub mod entities;
 pub mod infer;
 pub mod error;
 pub mod index;
+pub mod intent_router;
 pub mod llm;
 pub(crate) mod ocr;
 pub mod parser;
