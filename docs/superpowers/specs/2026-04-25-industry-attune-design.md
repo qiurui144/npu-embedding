@@ -653,7 +653,7 @@ directml = ["ort/directml"]          # Windows 核显/独显
 |:---|:---|:---|:---|:---|
 | **0** | 0.5 | 跨平台编译卫生（ort feature 拆 / cfg 补全 / Win MSVC build 通） | — | — |
 | **0.5** | 1.5 | **Tauri 2 桌面壳**（apps/attune-desktop）+ 内嵌 axum + 托盘 + 单实例 + 拖拽 + Win/Linux Tauri bundler 出包成功 | S0 | — |
-| **1** | 1.5 | Project / Case 数据模型 + AI 推荐归类 + 跨证据链 workflow（Phase A+B ✅ 2026-04-25） | S0 | 与 S0.5 并行 |
+| **1** | 1.5 | Project / Case 数据模型 + AI 推荐归类 + 跨证据链 workflow（Phase A+B+C ✅ 2026-04-25） | S0 | 与 S0.5 并行 |
 | **2** | 2 | Intent Router + 9 个 attune-pro skill 加 chat_trigger（5 law + 4 presales）| S1 | — |
 | **3** | 2 | RPA 自研：flk_npc + wechat_article + 异步后台框架 + 顶栏进度面板 | S2 | 与 S4 并行 |
 | **4** | 1 | 扩展行业化：白名单 + 浮窗 + 三档默认 + 检索捕获 | S2 | 与 S3 并行 |

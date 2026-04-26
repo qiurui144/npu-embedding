@@ -242,6 +242,13 @@ All endpoints are prefixed with `/api/v1/`. Localhost access is auth-free; remot
 | GET/POST/DELETE | `/projects/{id}/files` | File assignment to Project |
 | GET | `/projects/{id}/timeline` | Case timeline (events + evidence) |
 
+### Workflow Engine (Sprint 1 Phase C, see spec §3.3)
+
+- Built-in `law-pro/evidence_chain_inference` workflow runs automatically when a file is uploaded **and** assigned to a Project (after the user accepts the recommender's suggestion from Phase B).
+- 4 steps: extract entities (skill, mocked) → cross_reference (deterministic, SQL) → inference (skill, mocked) → write_annotation (stub, Sprint 2 wires vault DEK).
+- WS push: `{"type": "workflow_complete", "workflow_id": "...", "file_id": "...", "project_id": "..."}` after run.
+- Sprint 2 will wire real LLM via Intent Router and externalize the workflow yaml to attune-law plugin.
+
 ### Chat & sessions
 
 | Method | Path | Description |
