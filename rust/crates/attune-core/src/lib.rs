@@ -32,6 +32,7 @@ pub mod skill_evolution;
 pub mod web_search;
 pub mod web_search_browser;
 pub(crate) mod web_search_engines;
+pub mod workflow;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
