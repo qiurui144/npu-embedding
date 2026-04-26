@@ -176,6 +176,32 @@ fn is_chinese_name_char(c: char) -> bool {
     (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code)
 }
 
+/// 计算两组实体的 Jaccard 相似度：|A ∩ B| / |A ∪ B|。
+///
+/// 用 (kind, value) 二元组作为去重 key — 同字面值不同 kind 视为不同实体。
+/// 空输入返回 0.0。Sprint 1 Phase B 用 0.6 阈值判断"是否推荐归类"（spec §2.3）。
+pub fn entity_overlap_score(a: &[Entity], b: &[Entity]) -> f32 {
+    use std::collections::HashSet;
+
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+
+    let set_a: HashSet<(EntityKind, &str)> =
+        a.iter().map(|e| (e.kind, e.value.as_str())).collect();
+    let set_b: HashSet<(EntityKind, &str)> =
+        b.iter().map(|e| (e.kind, e.value.as_str())).collect();
+
+    let inter = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+
+    if union == 0 {
+        0.0
+    } else {
+        inter as f32 / union as f32
+    }
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -206,5 +232,41 @@ mod unit_tests {
         let v = extract_entities(text);
         let kinds: Vec<EntityKind> = v.iter().map(|e| e.kind).collect();
         assert_eq!(kinds, vec![EntityKind::Date, EntityKind::Person, EntityKind::Money]);
+    }
+
+    #[test]
+    fn overlap_score_identical() {
+        let a = extract_entities("张三借款 ¥10000，2024-03-15 到期");
+        let b = extract_entities("张三借款 ¥10000，2024-03-15 到期");
+        let s = entity_overlap_score(&a, &b);
+        assert!((s - 1.0).abs() < 1e-6, "完全相同应 1.0，got {s}");
+    }
+
+    #[test]
+    fn overlap_score_disjoint() {
+        let a = extract_entities("张三借款 ¥10000");
+        let b = extract_entities("李四签约 ¥50000");
+        let s = entity_overlap_score(&a, &b);
+        assert!(s < 0.01, "无重叠应 ~0，got {s}");
+    }
+
+    #[test]
+    fn overlap_score_partial() {
+        // 注意：人名抽取启发式会贪婪吞后续 CJK 字（"张三借款" 整体当 4 字人名），
+        // 故输入用空格分隔人名与动词，确保 Person="张三" 干净抽出。
+        let a = extract_entities("张三 借款 ¥10000 (2024)京02民终123号");
+        let b = extract_entities("张三 起诉 ¥20000 (2024)京02民终123号");
+        let s = entity_overlap_score(&a, &b);
+        // 共享：Person 张三 + CaseNo (2024)京02民终123号；不共享：¥10000 / ¥20000
+        // intersect = 2, union = 4 → 0.5
+        assert!((s - 0.5).abs() < 0.05, "应 ~0.5（Jaccard），got {s}");
+    }
+
+    #[test]
+    fn overlap_score_empty_inputs() {
+        assert_eq!(entity_overlap_score(&[], &[]), 0.0);
+        let a = extract_entities("张三");
+        assert_eq!(entity_overlap_score(&a, &[]), 0.0);
+        assert_eq!(entity_overlap_score(&[], &a), 0.0);
     }
 }
