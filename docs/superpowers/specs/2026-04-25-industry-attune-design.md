@@ -738,6 +738,13 @@ Sprint 2 必做（plugin loader）：
 - attune-pro 仓的 plugin.yaml 注册 workflow → attune-core 加载 → file_added 时按 trigger 匹配
 - attune-pro 的 evidence_chain_inference workflow 通过 plugin 动态加载（不再 hardcode）
 
+### Sprint 2 路径
+
+- **Phase A**（PluginRegistry + workflow type loading + file_added trigger via registry） — 2026-04-25 完成
+- **Phase B**（attune-pro 仓加 evidence_chain workflow yaml + 端到端实测） — TODO
+- **Phase C**（Intent Router + skill 路由 chat） — TODO
+- **Phase D**（write_annotation 真持久化 / vault DEK 注入 run_deterministic） — TODO
+
 ---
 
 ## 13. 验收清单（v0.1 GA Definition of Done）

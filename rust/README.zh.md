@@ -254,6 +254,18 @@ Master Password (用户记忆)  +  Device Secret (设备文件, 256-bit 随机)
 - WS 推送：`{"type": "workflow_complete", ...}` 跑完后通知前端
 - Sprint 2 将通过 Intent Router 接真实 LLM，并把 yaml 外提到 attune-law plugin
 
+### Plugin Loader（Sprint 2 Phase A）
+
+attune-server 启动时扫描 `~/.local/share/attune/plugins/`。每个子目录：
+- `plugin.yaml` 声明插件（id / name / type / version）
+- `workflows/*.yaml` 声明 workflow（按 attune-core schema 解析）
+- `capabilities/<cap_id>/plugin.yaml` 声明嵌套 skill
+
+触发器注册表：file_added 事件匹配插件中 `trigger.on == 'file_added'` 的 workflow，
+逐个 spawn-and-run，跑完通过 WebSocket 推 workflow_complete。
+
+attune-pro 的 `.attunepkg` 安装包解压到该目录。空插件目录 = 空操作（不会触发 workflow）。
+
 ### UI 通知（Sprint 1 Phase D）
 
 WebSocket `/ws/scan-progress` 现在复用三种消息类型：

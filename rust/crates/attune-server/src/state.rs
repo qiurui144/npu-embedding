@@ -62,11 +62,37 @@ pub struct AppState {
     /// Sprint 1 Phase B: project recommendation broadcast channel.
     /// upload.rs / chat.rs 收到信号后 send；ws.rs subscribe 推送给前端。
     pub recommendation_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Sprint 2: 启动时加载的 plugins（attune-pro / 用户 / 社区）
+    pub plugin_registry: std::sync::Arc<attune_core::plugin_registry::PluginRegistry>,
 }
 
 impl AppState {
     pub fn new(vault: Vault, require_auth: bool) -> Self {
         let (recommendation_tx, _rx) = tokio::sync::broadcast::channel::<serde_json::Value>(64);
+        let plugin_registry = match attune_core::plugin_registry::PluginRegistry::default_plugins_dir() {
+            Ok(dir) => match attune_core::plugin_registry::PluginRegistry::scan(&dir) {
+                Ok((reg, errs)) => {
+                    tracing::info!(
+                        "loaded {} plugins, {} workflows from {}",
+                        reg.plugins().count(),
+                        reg.workflows().len(),
+                        dir.display()
+                    );
+                    for e in &errs {
+                        tracing::warn!("plugin load error: {}", e);
+                    }
+                    std::sync::Arc::new(reg)
+                }
+                Err(e) => {
+                    tracing::warn!("plugin scan failed: {}", e);
+                    std::sync::Arc::new(attune_core::plugin_registry::PluginRegistry::new())
+                }
+            },
+            Err(e) => {
+                tracing::warn!("cannot resolve plugin dir: {}", e);
+                std::sync::Arc::new(attune_core::plugin_registry::PluginRegistry::new())
+            }
+        };
         Self {
             vault: Mutex::new(vault),
             fulltext: Mutex::new(None),
@@ -91,6 +117,7 @@ impl AppState {
             // 启动时检测一次硬件，后续复用（避免每次 GET/PATCH 都同步读 /proc 等）
             hardware: attune_core::platform::HardwareProfile::detect(),
             recommendation_tx,
+            plugin_registry,
         }
     }
 

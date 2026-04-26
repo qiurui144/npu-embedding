@@ -249,6 +249,18 @@ All endpoints are prefixed with `/api/v1/`. Localhost access is auth-free; remot
 - WS push: `{"type": "workflow_complete", "workflow_id": "...", "file_id": "...", "project_id": "..."}` after run.
 - Sprint 2 will wire real LLM via Intent Router and externalize the workflow yaml to attune-law plugin.
 
+### Plugin Loader (Sprint 2 Phase A)
+
+attune-server scans `~/.local/share/attune/plugins/` at startup. Each subdirectory:
+- `plugin.yaml` declares the plugin (id / name / type / version)
+- `workflows/*.yaml` declares workflows (parsed via attune-core schema)
+- `capabilities/<cap_id>/plugin.yaml` declares nested skills
+
+Trigger registry: file_added events match plugin workflows where `trigger.on == 'file_added'`,
+each spawn-and-run with workflow_complete pushed via WebSocket.
+
+attune-pro `.attunepkg` bundles unpack into this dir. Empty plugin dir = no-op (no workflows fire).
+
 ### UI Notifications (Sprint 1 Phase D)
 
 WebSocket `/ws/scan-progress` now multiplexes three message types:
