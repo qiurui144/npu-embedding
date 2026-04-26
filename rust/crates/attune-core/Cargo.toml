@@ -43,6 +43,7 @@ which = "6"
 # P1: 插件签名校验 (ed25519) —— 预留，PluginHub 上线前官方公钥占位
 ed25519-dalek = "2"
 base64 = "0.22"
+regex = "1"
 
 [features]
 default = []

@@ -9,6 +9,7 @@ pub mod classifier;
 pub mod clusterer;
 pub mod crypto;
 pub mod embed;
+pub mod entities;
 pub mod infer;
 pub mod error;
 pub mod index;
