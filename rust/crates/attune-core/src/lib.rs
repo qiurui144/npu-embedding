@@ -1,6 +1,10 @@
 pub mod ai_annotator;
 pub mod annotation_weight;
+// chat 模块整体 pub(crate) — ChatEngine 只能内部构造（依赖 Vault/Store internal types）。
+// 外部消费者（attune-server route）通过本 crate re-export 拿到 Citation / ChatResponse /
+// parse_confidence / strip_confidence_marker 这些公开 API（per reviewer I3）。
 pub(crate) mod chat;
+pub use chat::{parse_confidence, strip_confidence_marker, Citation, ChatEngine, ChatResponse};
 pub mod chunker;
 pub mod context_compress;
 pub mod plugin_loader;

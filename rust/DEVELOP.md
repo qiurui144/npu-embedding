@@ -399,6 +399,41 @@ fn process_batch() -> Result<usize> {
 
 **当前状态**：Worker 结构完整，`process_all()` 可同步处理（测试用），后台 `start()` 尚未在 server 启动时自动启动（Phase 4 补全）。
 
+## J 系列 RAG Production Quality（W2 batch 1，2026-04-27）
+
+详见 [`docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md`](../docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md)。所有抄袭来源登记在 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+**3 个核心改造**：
+
+```rust
+// J1：chunker 输出带面包屑路径，注入 chunk 文本前
+let sections = extract_sections_with_path(content);
+for s in &sections {
+    let prefixed = s.with_breadcrumb_prefix();  // "> A > B > C\n\n[content]"
+    indexer.embed(&prefixed);
+}
+
+// J3：search 路径分流 — chat 用 RAG 默认（0.65），通用 search 不过滤
+let rag_params = SearchParams::with_defaults_for_rag(5);   // min_score=Some(0.65)
+let general_params = SearchParams::with_defaults(5);        // min_score=None
+
+// J5：confidence 解析 + 二次检索（CRAG ambiguous 分支）
+let response_1 = run_llm_once(...);
+let conf_1 = parse_confidence(&response_1);   // 末尾【置信度: N/5】
+if conf_1 < 3 {
+    let broader = search(query, Some(0.55));   // 降阈值二次召回
+    let response_2 = run_llm_once_with(broader);
+}
+let display = strip_confidence_marker(&response);  // 用户看不到 marker
+```
+
+**B1 后端字段**：`Citation` 已加 `chunk_offset_start/end` + `breadcrumb`，但 W2 batch 1 中是占位（永远空）；W3 batch 2 透传 indexer → SearchResult 后才有真值。
+
+**Attribution 规范**（强制）：
+- 每个抄袭外部 pattern 的代码段必须含 `// per <Source> §<Section>` 内联注释
+- 每个 PR 合入前必须更新 `ACKNOWLEDGMENTS.md` 对应条目
+- Commit message 含 `Inspired-by: <project>(<URL>)` 行
+
 ## 资源治理框架（H1, 2026-04-27）
 
 `attune_core::resource_governor` 提供任务级 CPU/RAM/IO 协作式调度。所有常驻后台 worker 必须接入。详见 [`docs/superpowers/specs/2026-04-27-resource-governor-design.md`](../docs/superpowers/specs/2026-04-27-resource-governor-design.md)。

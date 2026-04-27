@@ -28,6 +28,29 @@
 - [ ] **全屏游戏场景**（H4 实现后）：启动全屏游戏 → governor 自动降到 Conservative → 游戏 FPS 不受 attune 影响
 - [ ] **电池场景**（H4 实现后）：拔电源切电池 → governor 自动切 Conservative → 续航不显著缩短
 
+## W2 Batch 1: RAG Quality Hardening（2026-04-27）
+
+设计稿：`docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md`
+
+### J1 Chunk 路径前缀
+- [ ] 导入一份多级标题 markdown 文档（4 级以上）→ chunk 索引化后用 `sqlite3` 查 `items.content` 含 `> A > B > C` 面包屑前缀
+- [ ] chat 引用某 chunk 时，prompt 里能看到完整 `[文档名 > 章节路径]`
+
+### J3 召回阈值
+- [ ] Settings 默认状态下 chat → 召回结果数量与 W2 之前相比"略降但精度上升"（吴师兄曲线）
+- [ ] Chrome 扩展 `/api/v1/search/relevant` 行为完全保持（陌生 query 仍能召回模糊匹配）— **回归核心**
+- [ ] **失败场景**：故意问"完全不相关问题" → 应返回 0 结果（陈旧版本会硬返回 top-5 噪音）
+
+### J5 强约束 Prompt + 置信度
+- [ ] chat 询问明确问题 → 答案中**不出现** "可能" "大概" "建议咨询" "或许" "应该"
+- [ ] chat 答案末尾**用户看不到**【置信度: N/5】marker（被 strip）
+- [ ] 故意问知识库无答案的问题 → 触发二次检索（日志看 `confidence < 3, triggering secondary retrieval`）；答案最终为"知识库中暂无相关信息"
+- [ ] LLM 输出多个 marker 时（罕见）→ parse 取最后一个、strip 只删最后一个之后
+
+### B1 backend
+- [ ] chat API 响应 JSON 含 `confidence` + `secondary_retrieval_used` + `citations[].breadcrumb` + `citations[].chunk_offset_start/end` 字段（即使 breadcrumb=[] / offset=null）
+- [ ] **Known limitation 验证**：当前 `breadcrumb` 总为空 array、`offset` 总为 null（W3 batch 2 才透传）— 前端不应假设有值
+
 ## A1 Memory Consolidation（2026-04-27）
 
 设计稿：`docs/superpowers/specs/2026-04-27-memory-consolidation-design.md`

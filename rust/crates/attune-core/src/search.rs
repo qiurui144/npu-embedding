@@ -97,13 +97,43 @@ pub struct SearchParams {
     pub initial_k: usize,
     /// Reranker 入口前的候选数量
     pub intermediate_k: usize,
+    // ── J3：vector 召回 cosine 阈值（W2，2026-04-27）───────────────────────
+    //
+    // 设计来源（per docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md §J3）：
+    //   吴师兄《鹅厂面试官追问：你的 RAG 能跑通 Demo？》§2 "召回阈值：一个参数，决定生死"
+    //   https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw
+    //   - 0.65：召回率 0.89，top-5 含 2 个噪音
+    //   - 0.72：召回率 0.84，top-5 基本有用（精度优先推荐）
+    //   - 0.78：召回率 0.71，开始漏边缘 case
+    //
+    // attune 默认 0.65（保守端）平衡召回与精度；用户可在 Settings 调到 0.72 求精度。
+    // None = 不过滤（向后兼容，初版调用方未传时不破行为）。
+    /// vector 召回 cosine 阈值。Some(0.65) 默认；低于此分数的 vector 结果在 RRF 前丢弃。
+    pub min_score: Option<f32>,
 }
 
 impl SearchParams {
+    /// 通用 search 路径默认 — **不**应用 cosine 阈值过滤，保持 W2 之前的行为契约。
+    /// 用于 `/api/v1/search` / `/api/v1/search/relevant` (Chrome 扩展) — 这些 route 的
+    /// 用户期望"全部召回，自己挑"。
+    /// per reviewer S2：自动启用 0.65 会让 Chrome 扩展 query 含义模糊时全无结果（cosine 0.4-0.6）。
     pub fn with_defaults(top_k: usize) -> Self {
         let initial_k = (top_k * 5).clamp(20, 100);
         let intermediate_k = (top_k * 2).clamp(top_k, 40);
-        Self { top_k, initial_k, intermediate_k }
+        Self {
+            top_k,
+            initial_k,
+            intermediate_k,
+            min_score: None,
+        }
+    }
+
+    /// **RAG / chat 专用**默认 — 启用 J3 cosine 阈值 0.65 过滤噪音
+    /// per spec §J3 + 吴师兄文章曲线。chat 主流程 confidence < 3 时降到 0.55 二次检索。
+    pub fn with_defaults_for_rag(top_k: usize) -> Self {
+        let mut s = Self::with_defaults(top_k);
+        s.min_score = Some(0.65);
+        s
     }
 }
 
@@ -224,18 +254,33 @@ pub fn search_with_context(
         .unwrap_or_default();
 
     // 2. 向量搜索（initial_k）
+    // J3 (per spec §J3)：拿到 vector 结果后立即按 min_score 过滤；
+    // 低于阈值的进 RRF 前丢弃，避免噪音污染融合排序。
     let (vec_results, query_vec): (Vec<(String, f32)>, Option<Vec<f32>>) =
         match (&ctx.embedding, &ctx.vectors) {
             (Some(emb), Some(vecs)) => {
                 match emb.embed(&[query]) {
                     Ok(e) if !e.is_empty() => {
                         let qv = e[0].clone();
-                        let vr = vecs.search(&qv, params.initial_k)
+                        let raw: Vec<(String, f32)> = vecs.search(&qv, params.initial_k)
                             .unwrap_or_default()
                             .into_iter()
                             .map(|(meta, score)| (meta.item_id, score))
                             .collect();
-                        (vr, Some(qv))
+                        let filtered: Vec<(String, f32)> = match params.min_score {
+                            Some(threshold) => {
+                                let kept: Vec<_> = raw.into_iter()
+                                    .filter(|(_, s)| *s >= threshold)
+                                    .collect();
+                                log::info!(
+                                    "search J3: vector min_score={:.3} kept {} results",
+                                    threshold, kept.len()
+                                );
+                                kept
+                            }
+                            None => raw,
+                        };
+                        (filtered, Some(qv))
                     }
                     _ => (vec![], None),
                 }
@@ -492,6 +537,8 @@ mod tests {
         assert_eq!(p.top_k, 5);
         assert_eq!(p.initial_k, 25);   // 5*5=25, in [20,100]
         assert_eq!(p.intermediate_k, 10); // 5*2=10, in [5,40]
+        // per reviewer S2：通用 search 默认不启用 J3 阈值，保持 W2 前行为契约
+        assert_eq!(p.min_score, None);
 
         let p2 = SearchParams::with_defaults(1);
         assert_eq!(p2.initial_k, 20);  // min clamp
@@ -500,6 +547,46 @@ mod tests {
         let p3 = SearchParams::with_defaults(30);
         assert_eq!(p3.initial_k, 100); // max clamp
         assert_eq!(p3.intermediate_k, 40); // max clamp
+    }
+
+    // ── J3 tests（per spec §J3 + reviewer S2 路径分离）──────────────
+
+    #[test]
+    fn min_score_filter_keeps_above_threshold() {
+        // 模拟 vecs.search 返回 [0.50, 0.70, 0.85]
+        let raw: Vec<(String, f32)> = vec![
+            ("a".into(), 0.50),
+            ("b".into(), 0.70),
+            ("c".into(), 0.85),
+        ];
+        let kept_065: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.65).cloned().collect();
+        assert_eq!(kept_065.len(), 2, "0.65 阈值应保留 2 个 (0.70 + 0.85)");
+        assert_eq!(kept_065[0].0, "b");
+        assert_eq!(kept_065[1].0, "c");
+
+        let kept_078: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.78).cloned().collect();
+        assert_eq!(kept_078.len(), 1, "0.78 阈值应保留 1 个 (0.85)");
+
+        let kept_055: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.55).cloned().collect();
+        assert_eq!(kept_055.len(), 2, "0.55 应保留 0.70 + 0.85（不含 0.50）");
+    }
+
+    #[test]
+    fn rag_defaults_enable_065_threshold() {
+        // chat 路径默认走 RAG 阈值（0.65）— J3 仅对 RAG 生效，通用 search 不变
+        let rag = SearchParams::with_defaults_for_rag(5);
+        assert_eq!(rag.min_score, Some(0.65));
+        assert_eq!(rag.top_k, 5);
+        assert_eq!(rag.initial_k, 25);  // 与通用版同构
+    }
+
+    #[test]
+    fn min_score_threshold_curve_documented_in_spec() {
+        // 锁住吴师兄文章给出的曲线值，避免有人未读 spec 误改默认
+        let rag = SearchParams::with_defaults_for_rag(5);
+        assert_eq!(rag.min_score, Some(0.65), "RAG 默认 0.65（保守端，召回优先）");
+        // 0.72 是吴师兄推荐的"精度优先"档，未来 Settings 提供
+        // 0.78 开始漏边缘 case，仅极端精度场景用
     }
 
     // #9: search_with_context 三阶段管道（有 Reranker）

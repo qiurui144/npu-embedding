@@ -2,6 +2,43 @@
 
 ## 开发中
 
+## W2 Batch 1: J1 + J3 + J5 + B1 backend (2026-04-27)
+
+12-week 战略 v4 Phase 1 W2，**第一波用户感知 RAG 质量**改造。配合 6 维度开源生态调研后明确"抄 vs 自研"边界，全部抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+### J1 Chunk 面包屑路径前缀
+- `attune_core::chunker::extract_sections_with_path` 新增；输出 `SectionWithPath { section_idx, path, content }`，path 是文档根开始的标题层级
+- `with_breadcrumb_prefix()` 把 path 用 Markdown blockquote `> A > B > C` 注入到 chunk 头部
+- 旧 `extract_sections` 改为 wrapper 调新版（消除重复实现）
+- Markdown 标题识别扩展到 H1-H6（CommonMark 标准）
+- **来源**：[吴师兄文章](https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw) §1
+
+### J3 召回 cosine 阈值显式化
+- `SearchParams::min_score: Option<f32>` 字段
+- **`with_defaults` 默认 None**（保持 W2 前 Chrome 扩展 `/api/v1/search` 契约）
+- **`with_defaults_for_rag` 默认 0.65**（chat 主路径专用，per 吴师兄经验值）
+- vector 结果在 RRF 融合**之前**按 min_score 过滤；BM25 不过滤（score 不同尺度）
+- **来源**：吴师兄文章 §2 0.65/0.72/0.78 三档曲线
+
+### J5 强约束 Prompt + 置信度 + 二次检索
+- `build_rag_system_prompt` 重写：明确禁用模糊措辞（"可能"/"大概"/"建议咨询"）+ 引用必带来源 + 末尾输出【置信度: N/5】
+- `parse_confidence(response: &str) -> u8`：解析末尾 marker（中文【置信度: N/5】+ 英文 fallback [Confidence: N/5]）；缺失默认 3；取最后一个 marker（避开草稿中提到的示例）
+- `strip_confidence_marker(response: &str) -> String`：剥离 marker（与 parse 对称取最后一个）
+- `ChatResponse` 加 `confidence: u8` + `secondary_retrieval_used: bool` 字段
+- **二次检索（CRAG §3.2 ambiguous 分支）**：confidence < 3 → 降阈值 0.65→0.55 二次本地召回 + LLM 重跑一次（**硬上限一次重试**，无论本地 / web 路径都允许 fallback）
+- **来源**：[CRAG arXiv:2401.15884](https://arxiv.org/abs/2401.15884) §3.2 + [Self-RAG arXiv:2310.11511](https://arxiv.org/abs/2310.11511) confidence token 简化
+
+### B1 backend: Citation 加 deep-link 数据
+- `Citation` 加字段：`chunk_offset_start: Option<usize>` / `chunk_offset_end: Option<usize>` / `breadcrumb: Vec<String>`
+- **Known limitation**：当前 Citation.breadcrumb 永远 `vec![]`，offset 永远 `None` —— W3 batch 2 透传 indexer pipeline → VectorMeta → SearchResult → Citation 后填充。前端可绑 UI 但需做空兜底
+- 前端 Reader 模态高亮 / 滚动到 offset 是单独 PR（下次 Tauri/Preact 会话）
+
+### 工程
+- chat 模块 `pub(crate)` + `lib.rs` 精确 re-export `Citation` / `ChatEngine` / `ChatResponse` / `parse_confidence` / `strip_confidence_marker`（不暴露 ChatEngine 内部依赖）
+- 新建 `ACKNOWLEDGMENTS.md` + `.zh.md` 项目根 attribution registry，每个抄袭点必须登记
+- 测试：attune-core lib 394 → 415（+21）+ 11 集成 = 26 新测试。0 回归
+- **Two rounds of code review**：R1 4 严重 + 5 重要全修；R2 conditional pass + P1 #2 strip 对称已修；剩余 P1/P2 followups 见 `tmp/w2-batch1-followups.md`
+
 ## A1 Memory Consolidation MVP (2026-04-27)
 
 12-week 战略 v2 Phase 1 W1。引入**周期性 episodic memory** 数据模型 — chunk_summaries 按时间窗口聚合成"用户那天学了什么"的高层记忆，是 attune"自进化记忆"叙事（mem0 参考）的数据基石。详见 [`docs/superpowers/specs/2026-04-27-memory-consolidation-design.md`](../docs/superpowers/specs/2026-04-27-memory-consolidation-design.md)。
