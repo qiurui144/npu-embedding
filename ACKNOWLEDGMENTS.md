@@ -54,6 +54,8 @@ For full software-license attribution of dependencies, see `Cargo.lock` (Rust) a
 | [bitwarden/clients](https://github.com/bitwarden/clients) (GPL-3.0) | G5 默认 opt-out 模式 — 用户必须显式启用每个 domain，非默认开启 |
 | 行业 SRE 常识 | HARD_BLACKLIST 域名清单（banks / medical / gov / password managers / OAuth） — 无单一来源，行业共识 |
 | attune 自有 `MockLlmProvider` | F3 secondary retrieval E2E 测试 mocking pattern |
+| [RFC 2104 HMAC](https://datatracker.ietf.org/doc/html/rfc2104) + Stripe Idempotency-Key 模式 | G1 `domain_hash = HMAC-SHA256(pepper, domain)` 防裸 SHA-256 彩虹表反推（per R04 P1-1，pepper W4 升级到 vault salt 派生） |
+| attune migrate_task_type 模式（W2 之前） | R07 P0 `migrate_breadcrumbs_encrypt` schema 列名变更迁移直接复用同模式（pragma_table_info 检测 → ALTER/DROP+重建） |
 
 ### W3 Batch A — F1 / F2 / F4 / C1 (2026-04-27)
 
@@ -132,4 +134,4 @@ specifically the [feature name] design from [SHA or release tag].
 - This file is reviewed quarterly to add license URLs and verify dead links
 - Bilingual: English version is canonical; `ACKNOWLEDGMENTS.zh.md` is translated
 
-Last updated: 2026-04-27 (W2 batch 1 in progress).
+Last updated: 2026-04-27 (W3 全量收官 — A + B + C + 20 轮 review 修复)。

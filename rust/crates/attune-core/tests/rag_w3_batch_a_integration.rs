@@ -55,12 +55,12 @@ fn f2_breadcrumb_pipeline_writes_then_chat_reads() {
         .insert_item(&dek, "公司手册", content, None, "file", None, None)
         .unwrap();
     let n = store
-        .upsert_chunk_breadcrumbs_from_content(&item_id, content)
+        .upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content)
         .unwrap();
     assert!(n >= 2);
 
     // ChatEngine 路径模拟：search 拿到 item，查 first_chunk_breadcrumb
-    let bc = store.get_first_chunk_breadcrumb(&item_id).unwrap().unwrap();
+    let bc = store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().unwrap();
     assert!(!bc.0.is_empty(), "breadcrumb 应非空");
     assert_eq!(bc.1, 0, "第一个 chunk 的 offset_start = 0");
     assert!(bc.2 > 0, "offset_end > 0");
@@ -70,7 +70,8 @@ fn f2_breadcrumb_pipeline_writes_then_chat_reads() {
 fn f2_old_vault_without_sidecar_returns_none() {
     // 模拟老 vault 升级：表已建（schema 自动），但没数据
     let (store, _tmp) = temp_store();
-    let bc = store.get_chunk_breadcrumb("never-indexed", 0).unwrap();
+    let dek = Key32::generate();
+    let bc = store.get_chunk_breadcrumb(&dek, "never-indexed", 0).unwrap();
     assert!(bc.is_none(), "未 upsert 的 item 返回 None，让 Citation 优雅降级为空 Vec");
 }
 
@@ -80,14 +81,14 @@ fn f2_reindex_overwrites_old_breadcrumbs() {
     let dek = Key32::generate();
     let v1 = "# 旧标题\n\n旧内容";
     let item_id = store.insert_item(&dek, "doc", v1, None, "file", None, None).unwrap();
-    store.upsert_chunk_breadcrumbs_from_content(&item_id, v1).unwrap();
-    let bc1 = store.get_first_chunk_breadcrumb(&item_id).unwrap().unwrap();
+    store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, v1).unwrap();
+    let bc1 = store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().unwrap();
     assert_eq!(bc1.0[0], "旧标题");
 
     // 文件被改后重扫
     let v2 = "# 新标题\n\n新内容";
-    store.upsert_chunk_breadcrumbs_from_content(&item_id, v2).unwrap();
-    let bc2 = store.get_first_chunk_breadcrumb(&item_id).unwrap().unwrap();
+    store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, v2).unwrap();
+    let bc2 = store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().unwrap();
     assert_eq!(bc2.0[0], "新标题", "重扫应覆盖 path");
 }
 
@@ -124,9 +125,9 @@ fn citation_ends_to_end_with_breadcrumb_from_indexer() {
     let dek = Key32::generate();
     let content = "# 文档\n\n## 章节 A\n\n正文";
     let item_id = store.insert_item(&dek, "文档", content, None, "file", None, None).unwrap();
-    store.upsert_chunk_breadcrumbs_from_content(&item_id, content).unwrap();
+    store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
 
-    let (path, start, end) = store.get_first_chunk_breadcrumb(&item_id).unwrap().unwrap();
+    let (path, start, end) = store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().unwrap();
     let citation = Citation {
         item_id: item_id.clone(),
         title: "文档".into(),

@@ -163,7 +163,7 @@ cargo test -p attune-core --test parse_golden_set_regression
 
 **来源参照**：[Readwise Reader engineering blog](https://blog.readwise.io/the-next-chapter-of-reader-public-beta/) — 200 页 parsing benchmark + CI 95% 阈值方法论。
 
-### 3.4 安全测试
+### 3.5 安全测试
 
 | ID | 测试 | 预期 |
 |----|------|------|
@@ -174,7 +174,7 @@ cargo test -p attune-core --test parse_golden_set_regression
 | S-005 | 会话 token 伪造 | HMAC 验证，nonce 递增 |
 | S-006 | 无授权访问 | 所有 vault API 返回 403 |
 
-### 3.5 跨平台测试（CI 矩阵）
+### 3.6 跨平台测试（CI 矩阵）
 
 | OS | 架构 | 编译 | Unit | Integration |
 |----|------|------|------|-------------|

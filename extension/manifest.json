@@ -1,8 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "npu-webhook 知识库助手",
-  "version": "0.1.0",
-  "description": "个人知识库 + 记忆增强：自动捕获 AI 对话，无感注入相关知识",
+  "name": "Attune 私有 AI 知识伙伴",
+  "version": "0.6.0",
+  "description": "Private AI Knowledge Companion — Local-first, globally augmented, increasingly attuned to your expertise. 自动捕获 AI 对话 + 浏览状态信号 + 注入个人知识库。",
+  "_comment_incognito": "per R04 P1-4: incognito 强制不加载，防御 content script JS 检查被绕过的攻击路径",
+  "incognito": "not_allowed",
   "permissions": [
     "storage",
     "sidePanel",
@@ -34,6 +36,9 @@
     {
       "matches": ["<all_urls>"],
       "exclude_matches": [
+        "*://chatgpt.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
         "*://*/login*",
         "*://*/signin*",
         "*://*1password*/*",
@@ -41,6 +46,7 @@
         "*://*bitwarden*/*",
         "*://accounts.google.com/*"
       ],
+      "_comment": "per R18 P0 #3: 排除 AI 网站避免与 dist/content/index.js (AI 对话捕获) 双注入 race",
       "js": ["dist/content/browse_capture.js"],
       "run_at": "document_idle"
     }

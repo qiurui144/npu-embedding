@@ -130,7 +130,7 @@ fn process_single_file(store: &Store, dek: &Key32, dir_id: &str, path: &Path) ->
     // F2 (W3 batch A, 2026-04-27)：写 chunk_breadcrumbs sidecar 让 Citation 透传 path。
     // per reviewer I4：scanner / webdav 路径同步覆盖，避免文件夹监听 / WebDAV 来源
     // 的 item 永远 placeholder。
-    if let Err(e) = store.upsert_chunk_breadcrumbs_from_content(&item_id, &content) {
+    if let Err(e) = store.upsert_chunk_breadcrumbs_from_content(dek, &item_id, &content) {
         log::warn!("F2 upsert_chunk_breadcrumbs failed for item {item_id}: {e}");
     }
 

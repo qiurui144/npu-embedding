@@ -61,6 +61,13 @@
 
 ## W3 Batch B: G1 + G2 + G5 + F3（2026-04-27）
 
+### 前置准备（必读）
+- 后端：`cd rust && cargo run --bin attune-server` → 默认监听 `http://localhost:18900`
+- Chrome 扩展构建：`cd extension && npm install && npm run build`（产出 `dist/`）
+- Chrome 扩展加载：访问 `chrome://extensions/` → 开启"开发者模式" → "加载已解压扩展" → 选 `extension/` 目录
+- 验证安装：扩展图标出现在工具栏；点击 popup 看到 "知识注入" toggle + "浏览隐私 →" 按钮
+- 后端 vault 必须 unlocked（首次访问 backend `/api/v1/status` 应返回 `unlocked: true`）
+
 ### G1 浏览信号捕获 — 默认 opt-out 验证（核心隐私）
 - [ ] 装好扩展后立即访问任何网站 → `attune --diag` 或 `GET /api/v1/browse_signals` 应显示 `count=0`（默认不捕获）
 - [ ] 打开扩展 popup → Privacy tab → whitelist 列表为空
@@ -99,7 +106,7 @@
 - [ ] 关闭网络 → chat 询问知识库无结果但需 web search 的问题 → 报错（无缓存）
 - [ ] 联网 → 同问题 → web search 触发 → 答案显示 + 日志 `C1: web_search cache HIT` 缺失（首次 miss）
 - [ ] 30 秒内重问同问题 → 日志显示 `C1: web_search cache HIT (saved network call)`，无网络请求
-- [ ] Settings → "清空 web 缓存" (route 待 batch B) → 重问同问题应再次走网络
+- [ ] **W3 batch A 已知缺口**：web 缓存清理 route 暂未加（`Store::clear_web_search_cache` 函数已实现但未挂 HTTP），W4 加 `DELETE /api/v1/web_search_cache` + Settings UI clear 按钮后再覆盖此项
 - [ ] 加密验证：`sqlite3 vault.sqlite "SELECT hex(results_json_enc) FROM web_search_cache LIMIT 1"` 输出二进制非可读 JSON
 
 ### F1 二次检索可观测性

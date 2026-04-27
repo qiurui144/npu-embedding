@@ -274,11 +274,14 @@ CREATE INDEX IF NOT EXISTS idx_web_cache_created ON web_search_cache(created_at_
 CREATE TABLE IF NOT EXISTS chunk_breadcrumbs (
     -- per reviewer I3：FK CASCADE 与 annotations 表对称（item 硬删除时清理；
     -- 软删除模型下还需在 store::delete_item 显式清理，与 annotations 一致）
-    item_id          TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    chunk_idx        INTEGER NOT NULL,
-    breadcrumb_json  TEXT NOT NULL,
-    offset_start     INTEGER NOT NULL,
-    offset_end       INTEGER NOT NULL,
+    item_id              TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    chunk_idx            INTEGER NOT NULL,
+    -- per R04 P0-1：breadcrumb（章节标题路径如"案件分析 > 原告主张"）属用户敏感
+    -- 数据，必须 DEK 加密。修复违反 "All data encrypted on your own device" 承诺。
+    -- 字段名 breadcrumb_enc 取代原 breadcrumb_json 明文，schema bump 让老 db 自动重建。
+    breadcrumb_enc       BLOB NOT NULL,
+    offset_start         INTEGER NOT NULL,
+    offset_end           INTEGER NOT NULL,
     PRIMARY KEY (item_id, chunk_idx)
 );
 -- per reviewer G5：删除冗余 idx_chunk_breadcrumbs_item，PK 前缀已可用
@@ -316,6 +319,7 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
         conn.execute_batch(SCHEMA_SQL)?;
         Self::migrate_task_type(&conn)?;
+        Self::migrate_breadcrumbs_encrypt(&conn)?;
         Ok(Self { conn })
     }
 
@@ -325,6 +329,7 @@ impl Store {
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
         Self::migrate_task_type(&conn)?;
+        Self::migrate_breadcrumbs_encrypt(&conn)?;
         Ok(Self { conn })
     }
 
@@ -338,6 +343,46 @@ impl Store {
         if has_task_type == 0 {
             conn.execute(
                 "ALTER TABLE embed_queue ADD COLUMN task_type TEXT NOT NULL DEFAULT 'embed'",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// per R07 P0 + R04 P0-1：chunk_breadcrumbs.breadcrumb_json (TEXT 明文) →
+    /// breadcrumb_enc (BLOB DEK 加密) 列名变更迁移。
+    ///
+    /// 老 vault（W3 batch A 末，commit 28bd691）有 `breadcrumb_json` 列；升级到
+    /// W3 末后 SCHEMA_SQL `CREATE TABLE IF NOT EXISTS` 跳过老表 → INSERT 用
+    /// `breadcrumb_enc` 列名运行期 SQL error → F2 子系统瘫痪。
+    ///
+    /// 修复策略：检测老列存在 → DROP TABLE + IF NOT EXISTS 重建。
+    /// **老明文 breadcrumb 数据丢失**（acceptable — 下次 indexer ingest 触发重新
+    /// upsert 自动 backfill；R07 P0 注释 + RELEASE.md 用户须知"W3 升级后首次
+    /// ingest 触发 breadcrumb 重建"）。
+    fn migrate_breadcrumbs_encrypt(conn: &Connection) -> Result<()> {
+        let has_old_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chunk_breadcrumbs') WHERE name = 'breadcrumb_json'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_old_column > 0 {
+            log::info!(
+                "F2 P0-1 migration: dropping old chunk_breadcrumbs (breadcrumb_json plaintext) → \
+                 next indexer ingest will repopulate with encrypted breadcrumb_enc"
+            );
+            conn.execute("DROP TABLE chunk_breadcrumbs", [])?;
+            // 重建走 SCHEMA_SQL 的 CREATE TABLE IF NOT EXISTS — 但 SCHEMA_SQL 已在 open() 里
+            // 跑过一次（IF NOT EXISTS 跳过当时还有老列的表）。这里手动跑 CREATE 确保新 schema 生效。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS chunk_breadcrumbs (\
+                    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,\
+                    chunk_idx INTEGER NOT NULL,\
+                    breadcrumb_enc BLOB NOT NULL,\
+                    offset_start INTEGER NOT NULL,\
+                    offset_end INTEGER NOT NULL,\
+                    PRIMARY KEY (item_id, chunk_idx)\
+                 )",
                 [],
             )?;
         }

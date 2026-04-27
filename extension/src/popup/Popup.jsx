@@ -1,6 +1,8 @@
 import { h, render } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
 import { MSG, sendToWorker } from '../shared/messages.js';
+// G5 隐私面板（W3 batch B, 2026-04-27）— per R02 P0-1 修复 Privacy.jsx 死代码
+import { Privacy } from './Privacy.jsx';
 
 const styles = {
   container: { padding: '16px', fontFamily: 'system-ui, sans-serif', fontSize: '14px' },
@@ -41,6 +43,9 @@ function Popup() {
   const [stats, setStats] = useState({ items: 0, vectors: 0, pending: 0 });
   const [injecting, setInjecting] = useState(true);
   const [loading, setLoading] = useState(true);
+  // G5 (W3 batch B): tab 切换 — 'main' 默认；'privacy' 显示浏览隐私面板
+  // per R02 P0-1：之前 Privacy.jsx 完全死代码，用户没有 UI 入口
+  const [tab, setTab] = useState('main');
 
   useEffect(() => {
     sendToWorker(MSG.GET_STATUS).then((res) => {
@@ -65,6 +70,21 @@ function Popup() {
 
   const openPanel = () => sendToWorker(MSG.OPEN_SIDEPANEL);
   const openOptions = () => chrome.runtime.openOptionsPage();
+
+  // G5 tab 路由：privacy tab 显示 Privacy 组件
+  if (tab === 'privacy') {
+    return (
+      <div>
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={() => setTab('main')}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', color: '#4f46e5' }}
+          >← 返回</button>
+        </div>
+        <Privacy />
+      </div>
+    );
+  }
 
   return (
     <div style={styles.container}>
@@ -104,6 +124,8 @@ function Popup() {
 
       <button style={styles.btn} onClick={openPanel}>打开知识面板</button>
       <button style={styles.btnSecondary} onClick={openOptions}>设置</button>
+      {/* G5 入口（W3 batch B, per R02 P0-1） */}
+      <button style={styles.btnSecondary} onClick={() => setTab('privacy')}>浏览隐私 →</button>
     </div>
   );
 }

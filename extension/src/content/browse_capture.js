@@ -45,9 +45,10 @@
   if (HARD_BLACKLIST_PATH.some((re) => re.test(location.pathname))) {
     return;
   }
-  // 不在 chrome:// / about: / 扩展自身
-  if (location.protocol === 'chrome:' || location.protocol === 'about:' ||
-      location.protocol === 'chrome-extension:') {
+  // per R06 P1：只允许 http(s)，显式拒绝所有非 web 协议
+  // (覆盖 Chrome/Edge/Brave/Opera 等 Chromium 系内部协议 chrome:/edge:/brave:/opera:
+  //  + about: / chrome-extension: / data: / javascript: / file: 全部 block)
+  if (!/^https?:$/.test(location.protocol)) {
     return;
   }
 

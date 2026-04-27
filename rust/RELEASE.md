@@ -43,6 +43,17 @@ attune-core lib 测试 415 (W2 末) → **438**（+23），集成测试套件 3 
 
 12-week 战略 v4 Phase 1 W3 F-P0c batch B 全栈交付。**Chrome 扩展从"AI 对话捕获器"升级为"通用浏览状态知识源"** + 隐私控制面板 + W2 batch 1 followup F3 关闭。所有抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
 
+### ⚠️ Breaking change — 升级 action required
+- Chrome 扩展 manifest 加 `<all_urls>` host_permission + `incognito: not_allowed` + 新 content script — **首次升级用户安装时 Chrome 会弹出权限重新授权对话框**（"读取所有网站数据"）。这是 G1 浏览捕获的硬要求；隐私默认完全 opt-out，需在扩展 popup → 浏览隐私 → 显式加 domain 才会捕获。
+- attune-server 新增 `browse_signals` 表 — 老 vault 升级时 schema 自动 IF NOT EXISTS 创建空表，无需操作。
+- attune-server 新增 `<incognito>` Chrome 扩展强制不加载 — 用户在 Chrome 设置启用了"在隐私窗口允许扩展"也会被拒绝（防御 content script JS 检查被绕过的攻击）。
+
+### 用户视角的影响
+- **新能力**：浏览任意网站时，停留 ≥3 分钟 + 滚动 ≥50% + 复制至少 1 次 → attune 自动记下"你在意什么"作为 SkillEvolver / Profile 的输入信号
+- **隐私默认零捕获**：装好后什么都不发生，必须显式 opt-in 每个 domain
+- **硬黑名单覆盖任何手动 opt-in**：银行 / 医疗 / 政府登录页 / 密码管理器永远不捕获
+- 数据全部本机加密存储（DEK + AES-GCM）— `url` / `title` 加密，`domain_hash` HMAC + pepper（W4 升级到 vault salt 派生）
+
 ### G1 浏览信号捕获（后端 + 扩展全栈）
 - 新表 `browse_signals`：url/title DEK 加密 + domain_hash HMAC-SHA256(pepper, domain) + dwell/scroll/copy/visit + ts，带索引
 - `Store` API：record / list / count / clear_for_domain / clear_all
@@ -86,6 +97,17 @@ attune-core lib 测试 415 (W2 末) → **438**（+23），集成测试套件 3 
 - ❌ K2 Parse Golden Set — W3 batch C
 
 ## W3 Batch A: F1 + F2 + F4 + C1 (2026-04-27)
+
+### ⚠️ Breaking change — schema migration
+- W3 batch A 末（commit `28bd691`）→ W3 末（含 R04 P0-1 加密 + R07 P0 migration）：
+  `chunk_breadcrumbs.breadcrumb_json TEXT` 列名改 `breadcrumb_enc BLOB` (DEK 加密)
+- 老 vault 升级时 `migrate_breadcrumbs_encrypt` 自动 DROP + 重建表
+- **老明文 breadcrumb 数据丢失**（acceptable — 下次 indexer ingest 自动 backfill 加密版本）
+- **首次升级后第一次 chat 引用：Citation.breadcrumb 可能为空**直到 indexer 重建（< 1 分钟）
+
+### 用户视角
+- **F2 关闭 W2 placeholder**：现在 chat 引用真带 chunk path（`产品手册 > 第三章 > 3.2 假期`）
+- **C1 web cache**：相同 query 30 天内自动复用，省 token + 加速
 
 12-week 战略 v4 Phase 1 W3 F-P0c batch A 后端深做。**关闭 W2 batch 1 的 Citation placeholder 状态** + 加 web search 缓存层 + 关键可观测性日志。所有抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
 

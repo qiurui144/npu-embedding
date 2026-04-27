@@ -7,7 +7,7 @@
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256; // per R02 P1-1: Digest trait 在 HMAC 路径下 unused
 
 use crate::crypto::{self, Key32};
 use crate::error::Result;
@@ -96,15 +96,20 @@ fn hash_domain(domain: &str) -> String {
 
 impl Store {
     /// 写入一条浏览信号，返回新 row id。
+    /// per R05 P0：自动 truncate_to_limits 作 defense-in-depth — 防御非 route 调用方
+    /// 直接调 store 时跳过 route 层 truncate（如未来 batch indexer / migration tool）。
     pub fn record_browse_signal(
         &self,
         dek: &Key32,
         signal: &BrowseSignalInput,
         now_secs: i64,
     ) -> Result<i64> {
-        let url_enc = crypto::encrypt(dek, signal.url.as_bytes())?;
-        let title_enc = crypto::encrypt(dek, signal.title.as_bytes())?;
-        let domain_hash = hash_domain(&signal.domain());
+        // R05 P0：store 层兜底 truncate
+        let mut owned = signal.clone();
+        owned.truncate_to_limits();
+        let url_enc = crypto::encrypt(dek, owned.url.as_bytes())?;
+        let title_enc = crypto::encrypt(dek, owned.title.as_bytes())?;
+        let domain_hash = hash_domain(&owned.domain());
         self.conn.execute(
             "INSERT INTO browse_signals \
                 (url_enc, title_enc, domain_hash, dwell_ms, scroll_pct, copy_count, \
@@ -154,14 +159,22 @@ impl Store {
             .filter_map(|r| r.ok());
         let mut out = Vec::new();
         for (id, url_enc, title_enc, domain_hash, dwell, scroll, copy, visit, ts) in rows {
-            let url = crypto::decrypt(dek, &url_enc)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default();
-            let title = crypto::decrypt(dek, &title_enc)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default();
+            // per R15 P1：解密失败 fallback 到空字符串前 log warn，
+            // 否则用户切换 vault 后看到 url/title 全空但不知原因。
+            let url = match crypto::decrypt(dek, &url_enc) {
+                Ok(b) => String::from_utf8(b).unwrap_or_default(),
+                Err(e) => {
+                    log::warn!("G1 list_recent_browse_signals decrypt url failed for row {id}: {e}");
+                    String::new()
+                }
+            };
+            let title = match crypto::decrypt(dek, &title_enc) {
+                Ok(b) => String::from_utf8(b).unwrap_or_default(),
+                Err(e) => {
+                    log::warn!("G1 list_recent_browse_signals decrypt title failed for row {id}: {e}");
+                    String::new()
+                }
+            };
             out.push(BrowseSignalRow {
                 id,
                 url,
@@ -310,5 +323,35 @@ mod tests {
         let rows = store.list_recent_browse_signals(&dek, 10).unwrap();
         assert_eq!(rows[0].url, "https://new.com");
         assert_eq!(rows[1].url, "https://old.com");
+    }
+
+    #[test]
+    fn record_auto_truncates_oversized_fields() {
+        // per R05 P0 defense-in-depth：store 层兜底 truncate，1MB title 不能落盘
+        let store = Store::open_memory().unwrap();
+        let dek = Key32::generate();
+        let huge = "x".repeat(MAX_TITLE_LEN * 10);
+        let mut signal = sample_signal("https://x.com", 5, 80, 2);
+        signal.title = huge.clone();
+        store.record_browse_signal(&dek, &signal, 1000).unwrap();
+        let rows = store.list_recent_browse_signals(&dek, 1).unwrap();
+        assert_eq!(rows[0].title.chars().count(), MAX_TITLE_LEN, "title 必须被截断到上限");
+    }
+
+    #[test]
+    fn list_with_wrong_dek_silently_skips_decrypt_failures() {
+        // per R05 P0 #2：DEK 错路径无 panic，解密失败 fallback 到空字符串
+        let store = Store::open_memory().unwrap();
+        let dek_a = Key32::generate();
+        let dek_b = Key32::generate();
+        store.record_browse_signal(&dek_a, &sample_signal("https://x.com", 5, 80, 2), 1000).unwrap();
+        let rows = store.list_recent_browse_signals(&dek_b, 10).unwrap();
+        // 当前 fallback：解密失败 → url/title 空字符串（不崩溃）
+        // R04 P1-3 followup：未来加 decrypt_ok bool 字段让前端区分
+        assert_eq!(rows.len(), 1, "row 仍被列出（不丢条目）");
+        assert_eq!(rows[0].url, "", "wrong DEK → url 解密失败 → 空字符串 fallback");
+        assert_eq!(rows[0].title, "", "wrong DEK → title 解密失败 → 空字符串 fallback");
+        // domain_hash 明文，不受 DEK 影响 — 攻击向量在 R04 P1-1 + P1-2 followup 处理
+        assert!(!rows[0].domain_hash.is_empty());
     }
 }

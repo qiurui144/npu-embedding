@@ -68,6 +68,16 @@ pub async fn record_batch(
     let mut failed_indices: Vec<usize> = Vec::new();
     let mut high_engagement = 0usize;
     for (idx, signal) in body.signals.iter().enumerate() {
+        // per R04 P0-2：URL 协议白名单。仅允许 http/https；
+        // javascript: / data: / file: 等协议是 XSS / 任意文件读取风险。
+        // chrome 扩展虽在 manifest exclude chrome://，但页面 history.pushState 可
+        // 注入伪协议 URL，必须后端兜底。
+        if !signal.url.starts_with("https://") && !signal.url.starts_with("http://") {
+            tracing::warn!("G1 reject non-http(s) URL at idx={idx}");
+            failed_indices.push(idx);
+            continue;
+        }
+
         // per reviewer I3：截断超长字段（防恶意页面 1MB title）
         let mut owned = signal.clone();
         owned.truncate_to_limits();

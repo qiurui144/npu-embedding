@@ -83,7 +83,7 @@ pub async fn ingest(
 
     // F2 (W3 batch A, 2026-04-27)：与 /upload 同模式写 chunk_breadcrumbs sidecar
     // per spec docs/superpowers/specs/2026-04-27-w3-batch-a-design.md §4 + reviewer I2
-    if let Err(e) = vault.store().upsert_chunk_breadcrumbs_from_content(&id, &body.content) {
+    if let Err(e) = vault.store().upsert_chunk_breadcrumbs_from_content(&dek, &id, &body.content) {
         tracing::warn!("F2 upsert_chunk_breadcrumbs failed for item {id}: {e}");
     }
 

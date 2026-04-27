@@ -320,10 +320,10 @@ pub fn search_with_context(
     let mut results: Vec<SearchResult> = Vec::new();
     for (item_id, score) in &fused {
         if let Ok(Some(item)) = ctx.store.get_item(ctx.dek, item_id) {
-            // F2：用 item 第一个 chunk 的 breadcrumb 作启发式（W5+ 切精确 chunk）
+            // F2 (per R04 P0-1)：breadcrumb 现已加密落盘，需传 dek 解密
             let (breadcrumb, off_start, off_end) = ctx
                 .store
-                .get_first_chunk_breadcrumb(&item.id)
+                .get_first_chunk_breadcrumb(ctx.dek, &item.id)
                 .ok()
                 .flatten()
                 .map(|(p, s, e)| (p, Some(s), Some(e)))

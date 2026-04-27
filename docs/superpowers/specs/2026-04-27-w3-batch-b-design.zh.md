@@ -37,7 +37,7 @@ W3 batch B = G 系列后端 + Chrome 扩展上报 + 隐私控制 + F3 测试。
 
 ### G2 高 engagement 评分
 
-`dwell ≥3 分钟 + scroll ≥50% + copy ≥1` → is_high_engagement → route 层创建 placeholder item（W5-6 G3 时填真内容）。
+`dwell ≥3 分钟 + scroll ≥50% + copy ≥1` → is_high_engagement → route 层**仅计数返回 high_engagement，不创建 placeholder item**（占位无内容会污染搜索）。W5-6 G3 引入 page extraction 后才会 auto-bookmark with body。per reviewer N4 — 与英文版 spec 对齐。
 
 ### Routes
 

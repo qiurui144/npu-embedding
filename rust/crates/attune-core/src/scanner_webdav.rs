@@ -285,7 +285,7 @@ pub fn scan_remote(
                     match store.insert_item(dek, &title, &content, Some(&file.href), "file", None, None) {
                         Ok(item_id) => {
                             // F2 (W3 batch A, per reviewer I4)：WebDAV 路径接入
-                            if let Err(e) = store.upsert_chunk_breadcrumbs_from_content(&item_id, &content) {
+                            if let Err(e) = store.upsert_chunk_breadcrumbs_from_content(dek, &item_id, &content) {
                                 log::warn!("F2 upsert_chunk_breadcrumbs failed (webdav) for {item_id}: {e}");
                             }
                             // Enqueue embedding

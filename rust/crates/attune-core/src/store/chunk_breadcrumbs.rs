@@ -1,29 +1,30 @@
 //! F2 Chunk breadcrumb 元数据 sidecar（W3 batch A，2026-04-27）。
 //!
 //! per spec `docs/superpowers/specs/2026-04-27-w3-batch-a-design.md` §4
+//! per R04 P0-1：breadcrumb 属用户敏感数据（章节标题路径暴露文档结构 + 主题），
+//! 必须 DEK 加密落盘。violates "All data encrypted on your own device" 承诺。
 //!
 //! 关闭 W2 batch 1 留下的 placeholder 状态：让 `Citation.breadcrumb` + `chunk_offset_*`
 //! 真正有值。设计取舍：用独立 sidecar 表而非扩 `embed_queue` / `VectorMeta` —
 //! 避免老 vault `.encbin` 反序列化破坏 + 4 个 enqueue 调用点的迁移风险。
-//!
-//! 老 vault 升级时 IF NOT EXISTS 创建空表 → ChatEngine 查不到时返回空 Vec 优雅降级。
-//! 新 indexer pipeline（routes/upload.rs / routes/ingest.rs / scanner.rs / scanner_webdav.rs）
-//! 在每个 item 入库后调 [`Store::upsert_chunk_breadcrumbs_from_content`] 一行写入。
 
 use rusqlite::{params, OptionalExtension};
 
 use crate::chunker::extract_sections_with_path;
+use crate::crypto::{self, Key32};
 use crate::error::{Result, VaultError};
 use crate::store::Store;
 
 impl Store {
     /// 用文档原文跑 [`extract_sections_with_path`] 后批量写入 chunk_breadcrumbs。
     ///
+    /// per R04 P0-1：breadcrumb_json DEK 加密后落盘，参数加 `dek: &Key32`。
     /// 调用方：indexer pipeline 在 chunk 入 embed_queue 之前 / 同时调用一次。
     /// 同 (item_id, chunk_idx) 二次调用走 INSERT OR REPLACE 覆盖。
     /// 返回写入条数。
     pub fn upsert_chunk_breadcrumbs_from_content(
         &self,
+        dek: &Key32,
         item_id: &str,
         content: &str,
     ) -> Result<usize> {
@@ -31,9 +32,6 @@ impl Store {
         if sections.is_empty() {
             return Ok(0);
         }
-        // 计算每个 section 在 content 中的 char-level offset。
-        // chunker 的 section 是按行累积的，相对顺序与原文一致；用 cumulative char count
-        // 即可（content.chars() 一次扫描足够）。
         let mut cursor: usize = 0;
         let mut written = 0;
         for section in &sections {
@@ -44,14 +42,16 @@ impl Store {
 
             let breadcrumb_json = serde_json::to_string(&section.path)
                 .map_err(|e| VaultError::InvalidInput(format!("breadcrumb json: {e}")))?;
+            // P0-1: 加密敏感字段
+            let breadcrumb_enc = crypto::encrypt(dek, breadcrumb_json.as_bytes())?;
             self.conn.execute(
                 "INSERT OR REPLACE INTO chunk_breadcrumbs \
-                    (item_id, chunk_idx, breadcrumb_json, offset_start, offset_end) \
+                    (item_id, chunk_idx, breadcrumb_enc, offset_start, offset_end) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     item_id,
                     section.section_idx as i64,
-                    breadcrumb_json,
+                    breadcrumb_enc,
                     offset_start as i64,
                     offset_end as i64,
                 ],
@@ -62,24 +62,36 @@ impl Store {
     }
 
     /// 查询单个 chunk 的 (breadcrumb, offset_start, offset_end)。缺失返回 None。
+    /// per P0-1: 解密 breadcrumb_enc。
     pub fn get_chunk_breadcrumb(
         &self,
+        dek: &Key32,
         item_id: &str,
         chunk_idx: usize,
     ) -> Result<Option<(Vec<String>, usize, usize)>> {
-        let row: Option<(String, i64, i64)> = self
+        let row: Option<(Vec<u8>, i64, i64)> = self
             .conn
             .query_row(
-                "SELECT breadcrumb_json, offset_start, offset_end \
+                "SELECT breadcrumb_enc, offset_start, offset_end \
                  FROM chunk_breadcrumbs WHERE item_id = ?1 AND chunk_idx = ?2",
                 params![item_id, chunk_idx as i64],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let Some((json, start, end)) = row else {
+        let Some((enc, start, end)) = row else {
             return Ok(None);
         };
-        let path: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+        let plain = match crypto::decrypt(dek, &enc) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("F2 P0-1 breadcrumb decrypt failed for {item_id}#{chunk_idx}: {e}");
+                return Ok(None);
+            }
+        };
+        let path: Vec<String> = serde_json::from_slice(&plain).unwrap_or_else(|e| {
+            log::warn!("F2 breadcrumb json parse failed for {item_id}#{chunk_idx}: {e}");
+            Vec::new()
+        });
         Ok(Some((path, start as usize, end as usize)))
     }
 
@@ -88,22 +100,30 @@ impl Store {
     /// W5+ 当 SearchResult 携带 chunk_idx 后切到精确 [`Self::get_chunk_breadcrumb`]。
     pub fn get_first_chunk_breadcrumb(
         &self,
+        dek: &Key32,
         item_id: &str,
     ) -> Result<Option<(Vec<String>, usize, usize)>> {
-        let row: Option<(String, i64, i64)> = self
+        let row: Option<(Vec<u8>, i64, i64)> = self
             .conn
             .query_row(
-                "SELECT breadcrumb_json, offset_start, offset_end \
+                "SELECT breadcrumb_enc, offset_start, offset_end \
                  FROM chunk_breadcrumbs WHERE item_id = ?1 \
                  ORDER BY chunk_idx ASC LIMIT 1",
                 params![item_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let Some((json, start, end)) = row else {
+        let Some((enc, start, end)) = row else {
             return Ok(None);
         };
-        let path: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+        let plain = match crypto::decrypt(dek, &enc) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("F2 P0-1 breadcrumb decrypt failed for {item_id}#first: {e}");
+                return Ok(None);
+            }
+        };
+        let path: Vec<String> = serde_json::from_slice(&plain).unwrap_or_default();
         Ok(Some((path, start as usize, end as usize)))
     }
 
@@ -121,7 +141,6 @@ mod tests {
     use super::*;
     use crate::crypto::Key32;
 
-    /// 测试辅助：先 insert_item 再返回真 item_id（FK CASCADE 要求 items 存在，per reviewer I3）
     fn seed_item(store: &Store, dek: &Key32, content: &str) -> String {
         store
             .insert_item(dek, "test-doc", content, None, "file", None, None)
@@ -135,9 +154,8 @@ mod tests {
         let content = "# 公司手册\n\n概述\n\n## 第一章\n\n内容 A\n\n## 第二章\n\n内容 B";
         let item_id = seed_item(&store, &dek, content);
         let n = store
-            .upsert_chunk_breadcrumbs_from_content(&item_id, content)
+            .upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content)
             .unwrap();
-        // 至少 3 段（标题 + 第一章 + 第二章）
         assert!(n >= 3, "应写入 ≥3 行，得到 {n}");
         assert_eq!(store.chunk_breadcrumbs_count().unwrap(), n);
     }
@@ -149,9 +167,9 @@ mod tests {
         let content = "# 文档\n\n## 章节 A\n\n正文";
         let item_id = seed_item(&store, &dek, content);
         store
-            .upsert_chunk_breadcrumbs_from_content(&item_id, content)
+            .upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content)
             .unwrap();
-        let r = store.get_chunk_breadcrumb(&item_id, 0).unwrap();
+        let r = store.get_chunk_breadcrumb(&dek, &item_id, 0).unwrap();
         assert!(r.is_some());
         let (path, start, end) = r.unwrap();
         assert!(!path.is_empty());
@@ -161,10 +179,10 @@ mod tests {
     #[test]
     fn lookup_unknown_returns_none() {
         let store = Store::open_memory().unwrap();
-        // 用未 insert_item 过的 id 查询 — FK 校验仅 INSERT 时触发，SELECT 无影响
-        let r = store.get_chunk_breadcrumb("non-existent", 0).unwrap();
+        let dek = Key32::generate();
+        let r = store.get_chunk_breadcrumb(&dek, "non-existent", 0).unwrap();
         assert!(r.is_none());
-        let r2 = store.get_first_chunk_breadcrumb("non-existent").unwrap();
+        let r2 = store.get_first_chunk_breadcrumb(&dek, "non-existent").unwrap();
         assert!(r2.is_none());
     }
 
@@ -174,10 +192,10 @@ mod tests {
         let dek = Key32::generate();
         let v1 = "# A\n\n旧";
         let item_id = seed_item(&store, &dek, v1);
-        store.upsert_chunk_breadcrumbs_from_content(&item_id, v1).unwrap();
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, v1).unwrap();
         let count_after_v1 = store.chunk_breadcrumbs_count().unwrap();
         let v2 = "# A\n\n新内容";
-        let n = store.upsert_chunk_breadcrumbs_from_content(&item_id, v2).unwrap();
+        let n = store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, v2).unwrap();
         assert_eq!(n, count_after_v1);
     }
 
@@ -187,8 +205,8 @@ mod tests {
         let dek = Key32::generate();
         let content = "# 文档根\n\n## 第一章\n\nA\n\n## 第二章\n\nB";
         let item_id = seed_item(&store, &dek, content);
-        store.upsert_chunk_breadcrumbs_from_content(&item_id, content).unwrap();
-        let first = store.get_first_chunk_breadcrumb(&item_id).unwrap().unwrap();
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
+        let first = store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().unwrap();
         assert_eq!(first.1, 0);
     }
 
@@ -197,7 +215,7 @@ mod tests {
         let store = Store::open_memory().unwrap();
         let dek = Key32::generate();
         let item_id = seed_item(&store, &dek, "placeholder");
-        let n = store.upsert_chunk_breadcrumbs_from_content(&item_id, "").unwrap();
+        let n = store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, "").unwrap();
         assert_eq!(n, 0);
     }
 
@@ -207,44 +225,116 @@ mod tests {
         let dek = Key32::generate();
         let content = "# 中文标题 🎉\n\n## 子节 emoji 😀\n\n内容";
         let item_id = seed_item(&store, &dek, content);
-        store.upsert_chunk_breadcrumbs_from_content(&item_id, content).unwrap();
-        let r = store.get_chunk_breadcrumb(&item_id, 0).unwrap().unwrap();
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
+        let r = store.get_chunk_breadcrumb(&dek, &item_id, 0).unwrap().unwrap();
         assert!(r.0.iter().any(|p| p.contains("中文") || p.contains("🎉")));
     }
 
     #[test]
     fn fk_cascade_deletes_breadcrumbs_on_item_hard_delete() {
-        // 验证 reviewer I3 的 FK CASCADE 正确生效
         let store = Store::open_memory().unwrap();
         let dek = Key32::generate();
         let content = "# T\n\n## A\n\n正文";
         let item_id = seed_item(&store, &dek, content);
-        store.upsert_chunk_breadcrumbs_from_content(&item_id, content).unwrap();
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
         assert!(store.chunk_breadcrumbs_count().unwrap() > 0);
-
-        // 硬删除 item → CASCADE 触发清理 breadcrumbs
         store.conn.execute("DELETE FROM items WHERE id = ?1", rusqlite::params![item_id]).unwrap();
         assert_eq!(store.chunk_breadcrumbs_count().unwrap(), 0, "CASCADE 应清空 breadcrumbs");
     }
 
     #[test]
     fn soft_delete_clears_breadcrumbs() {
-        // 验证 reviewer R2 P0-1：软删除 item 后 chunk_breadcrumbs 也被清理，
-        // 防止 ChatEngine 后续透传 stale breadcrumb 到 Citation
         let store = Store::open_memory().unwrap();
         let dek = Key32::generate();
         let content = "# 文档\n\n## 章节\n\n正文";
         let item_id = seed_item(&store, &dek, content);
-        store.upsert_chunk_breadcrumbs_from_content(&item_id, content).unwrap();
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
         let before = store.chunk_breadcrumbs_count().unwrap();
         assert!(before > 0);
-
-        // 走软删除路径（is_deleted=1，item 行不会真删）
         let deleted = store.delete_item(&item_id).unwrap();
         assert!(deleted, "软删除应成功");
-        // 验证 breadcrumbs 同时被清
-        assert_eq!(store.chunk_breadcrumbs_count().unwrap(), 0, "软删除应连坐 breadcrumbs");
-        // 验证 ChatEngine 路径返回 None（优雅降级而非 stale data）
-        assert!(store.get_first_chunk_breadcrumb(&item_id).unwrap().is_none());
+        assert_eq!(store.chunk_breadcrumbs_count().unwrap(), 0);
+        assert!(store.get_first_chunk_breadcrumb(&dek, &item_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn migrate_breadcrumbs_encrypt_drops_old_plaintext_column() {
+        // per R07 P0：模拟 W3 batch A 末老 schema → 升级到 W3 末新 schema
+        // 验证 migrate_breadcrumbs_encrypt 触发 DROP + 重建，不让 indexer 写入 SQL error
+        use rusqlite::Connection;
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // 1. 跑老 schema（仅 chunk_breadcrumbs 这张表，模拟 W3 batch A 末）
+        conn.execute(
+            "CREATE TABLE items (id TEXT PRIMARY KEY)", []
+        ).unwrap();
+        conn.execute(
+            "CREATE TABLE chunk_breadcrumbs (\
+                item_id TEXT NOT NULL,\
+                chunk_idx INTEGER NOT NULL,\
+                breadcrumb_json TEXT NOT NULL,\
+                offset_start INTEGER NOT NULL,\
+                offset_end INTEGER NOT NULL,\
+                PRIMARY KEY (item_id, chunk_idx)\
+             )",
+            [],
+        ).unwrap();
+        // 写入老明文行
+        conn.execute(
+            "INSERT INTO items (id) VALUES ('old-item')", []
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO chunk_breadcrumbs (item_id, chunk_idx, breadcrumb_json, offset_start, offset_end) \
+             VALUES ('old-item', 0, '[\"老明文\"]', 0, 100)",
+            [],
+        ).unwrap();
+        // 2. 跑 migrate
+        Store::migrate_breadcrumbs_encrypt(&conn).unwrap();
+        // 3. 验证：老列 breadcrumb_json 不存在；新列 breadcrumb_enc 存在
+        let has_old: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chunk_breadcrumbs') WHERE name = 'breadcrumb_json'",
+                [], |r| r.get(0),
+            ).unwrap();
+        let has_new: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chunk_breadcrumbs') WHERE name = 'breadcrumb_enc'",
+                [], |r| r.get(0),
+            ).unwrap();
+        assert_eq!(has_old, 0, "老明文列必须被 DROP");
+        assert_eq!(has_new, 1, "新加密列必须存在");
+        // 老数据已丢（acceptable 因为下次 indexer 重建）
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM chunk_breadcrumbs", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn migrate_breadcrumbs_encrypt_idempotent_on_new_schema() {
+        // 全新 schema 已经是 breadcrumb_enc，迁移函数不应做任何事
+        let store = Store::open_memory().unwrap();
+        let count_before = store.chunk_breadcrumbs_count().unwrap();
+        Store::migrate_breadcrumbs_encrypt(&store.conn).unwrap();
+        assert_eq!(store.chunk_breadcrumbs_count().unwrap(), count_before, "新 schema 下 migrate 应 no-op");
+    }
+
+    #[test]
+    fn breadcrumb_encrypted_at_rest() {
+        // per R04 P0-1：breadcrumb 落盘必须加密
+        let store = Store::open_memory().unwrap();
+        let dek = Key32::generate();
+        let content = "# 案件分析\n\n## 原告主张\n\n详情";
+        let item_id = seed_item(&store, &dek, content);
+        store.upsert_chunk_breadcrumbs_from_content(&dek, &item_id, content).unwrap();
+        let raw: Vec<u8> = store
+            .conn
+            .query_row(
+                "SELECT breadcrumb_enc FROM chunk_breadcrumbs WHERE item_id = ?1 LIMIT 1",
+                rusqlite::params![item_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let raw_str = String::from_utf8_lossy(&raw);
+        assert!(!raw_str.contains("案件分析"), "breadcrumb 必须加密落盘 (P0-1)");
+        assert!(!raw_str.contains("原告"), "breadcrumb 必须加密落盘 (P0-1)");
     }
 }
