@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   lint-and-test:
@@ -47,6 +47,23 @@ jobs:
       - name: Build
         working-directory: extension
         run: npm run build
+      - name: Verify build outputs (R18 #2 — dist/content/browse_capture.js 必须存在)
+        working-directory: extension
+        run: |
+          test -f dist/content/index.js || (echo "missing dist/content/index.js"; exit 1)
+          test -f dist/content/browse_capture.js || (echo "missing dist/content/browse_capture.js (G1)"; exit 1)
+          test -f dist/content/indicator.css || (echo "missing dist/content/indicator.css"; exit 1)
+          test -f dist/popup/index.html || (echo "missing dist/popup/index.html"; exit 1)
+          test -f dist/sidepanel/index.html || (echo "missing dist/sidepanel/index.html"; exit 1)
+          test -f dist/options/index.html || (echo "missing dist/options/index.html"; exit 1)
+          test -f dist/background/worker.js || (echo "missing dist/background/worker.js"; exit 1)
+          echo "All required dist outputs present."
+      - name: Upload extension dist artifact (W4-001 — release pipeline 可下载)
+        uses: actions/upload-artifact@v4
+        with:
+          name: attune-extension-dist
+          path: extension/dist/
+          retention-days: 30
 
   rust-test:
     # Rust 商用线 CI — attune-core + attune-server + attune-cli workspace
@@ -65,6 +82,9 @@ jobs:
             ~/.cargo/git
             rust/target
           key: cargo-v1-${{ hashFiles('rust/Cargo.lock') }}
+      - name: K2 Parse Golden Gate (W3 batch C, gate <95% blocks PR)
+        working-directory: rust
+        run: cargo test --release -p attune-core --test parse_golden_set_regression
       - name: cargo test workspace
         working-directory: rust
         run: cargo test --workspace --release
