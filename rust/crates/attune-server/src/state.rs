@@ -208,44 +208,44 @@ impl AppState {
             }
         }
 
-        // LLM 三级优先级：1. 配置文件 llm.endpoint  2. Ollama 自动探测  3. 无 LLM
+        // LLM 四级优先级：1. 配置文件 llm.endpoint（OpenAI-compatible）
+        //                  2. provider=local + 明确指定 model → OllamaLlmProvider::with_model
+        //                  3. Ollama 自动探测（PREFERRED_MODELS 列表）
+        //                  4. 无 LLM（Chat 功能禁用）
         let llm_result: Option<Arc<dyn LlmProvider>> = {
-            // 级别 1：读取 settings 中的 llm 配置
             let configured_llm = {
                 let vault_guard = self.vault.lock().unwrap_or_else(|e| e.into_inner());
                 vault_guard.store().get_meta("app_settings").ok().flatten()
                     .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
                     .and_then(|settings| {
-                        let endpoint = settings.get("llm")
-                            .and_then(|l| l.get("endpoint"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let api_key = settings.get("llm")
-                            .and_then(|l| l.get("api_key"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let model = settings.get("llm")
-                            .and_then(|l| l.get("model"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("gpt-4o-mini")
-                            .to_string();
-                        endpoint.map(|ep| {
+                        let llm = settings.get("llm")?;
+                        let endpoint = llm.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let api_key = llm.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let model = llm.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let provider = llm.get("provider").and_then(|v| v.as_str()).unwrap_or("local");
+
+                        if let Some(ep) = endpoint {
+                            // 级别 1：明确配置了 endpoint → OpenAI-compatible（含 Qwen/DeepSeek 等）
                             tracing::info!("LLM: using configured endpoint {ep}");
-                            Arc::new(OpenAiLlmProvider::new(&ep, &api_key, &model))
-                                as Arc<dyn LlmProvider>
-                        })
+                            Some(Arc::new(OpenAiLlmProvider::new(&ep, &api_key, &model)) as Arc<dyn LlmProvider>)
+                        } else if provider == "local" && !model.is_empty() {
+                            // 级别 2：local provider + 明确指定 model → Ollama with_model
+                            tracing::info!("LLM: using Ollama with configured model {model}");
+                            Some(Arc::new(OllamaLlmProvider::with_model(&model)) as Arc<dyn LlmProvider>)
+                        } else {
+                            None
+                        }
                     })
             };
 
-            // 级别 2：Ollama 自动探测
+            // 级别 3：Ollama 自动探测
             configured_llm.or_else(|| {
                 OllamaLlmProvider::auto_detect().ok().map(|llm| {
                     tracing::info!("LLM: using Ollama auto-detect");
                     Arc::new(llm) as Arc<dyn LlmProvider>
                 })
             })
-            // 级别 3：None（Chat 功能禁用）
+            // 级别 4：None（Chat 功能禁用）
         };
 
         if let Some(llm_arc) = llm_result {
