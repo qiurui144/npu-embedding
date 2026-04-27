@@ -1,5 +1,21 @@
 # attune 版本记录
 
+## 开发中
+
+## H1 资源治理框架 (2026-04-27)
+
+12-week 战略 v2 Phase 1 W1。引入**任务级协作式资源治理**，所有后台 worker 的"系统好公民"基础设施。详见 [`docs/system-impact.md`](../docs/system-impact.md)。
+
+- **`attune_core::resource_governor`** 新模块：`Budget` / `Profile` / `TaskKind` / `TaskGovernor` / `GovernorRegistry` / `SysinfoMonitor`
+- **三档预设**：`Conservative` / `Balanced`（默认）/ `Aggressive`，每档 × 10 任务种类共 30 组合配置
+- **全局 CPU 阈值语义**：`cpu_pct_max` 是"系统全局 CPU 占用 > 阈值时本任务暂缓"，多 worker 共享同一全局指标，避免 budget 累加 > 100% 失真
+- **顶栏 Pause 全局信号**：`global_registry().pause_all()` 1 秒内停所有 worker，集成测试验证
+- **LLM 速率窗口**：SkillEvolution / MemoryConsolidation 类任务额外 `allow_llm_call()` 滑动小时窗口，防止 LLM 失败重试风暴
+- **W1 已 retrofit**：`attune-server::state::start_{classify,rescan,queue,skill_evolver}_worker` 4 个生产 worker；`attune-core::queue::QueueWorker` 库路径
+- **测试**：30 组合 snapshot + 28 单元 + 4 集成 + 1 ignored 真烧 CPU（本地实测 32 burner 线程 + Conservative 15% 阈值 → throttled=50/allowed=0，治理 100% 生效）
+- **跨平台**：sysinfo 0.32 全 Linux/Windows/macOS；CPU 采样 250ms 缓存防 sysinfo MINIMUM_CPU_UPDATE_INTERVAL 退化
+- 设计文档：[`docs/superpowers/specs/2026-04-27-resource-governor-design.md`](../docs/superpowers/specs/2026-04-27-resource-governor-design.md)
+
 ## 已发布
 
 ## 深度阅读 + 批注 + 上下文压缩 (2026-04-18)

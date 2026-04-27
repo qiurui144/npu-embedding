@@ -8,6 +8,7 @@ use attune_core::clusterer::ClusterSnapshot;
 use attune_core::embed::{EmbeddingProvider, OllamaProvider};
 use attune_core::index::FulltextIndex;
 use attune_core::llm::{LlmProvider, OllamaLlmProvider, OpenAiLlmProvider};
+use attune_core::resource_governor::{global_registry, TaskKind};
 use attune_core::tag_index::TagIndex;
 use attune_core::taxonomy::Taxonomy;
 use attune_core::vault::Vault;
@@ -423,6 +424,10 @@ impl AppState {
             return;
         }
 
+        // H1：classify worker 走 LLM 分类，复用 AiAnnotator 档位（无 LLM 速率限制，
+        // 但 CPU/RAM 受治理；如未来要为分类单独建档可加 TaskKind::Classify）。
+        let governor = global_registry().register(TaskKind::AiAnnotator);
+
         std::thread::spawn(move || {
             tracing::info!("Classify worker started");
             loop {
@@ -434,10 +439,16 @@ impl AppState {
                     }
                 }
 
+                if !governor.should_run() {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+
                 match state.drain_classify_batch(5) {
                     Ok(0) => std::thread::sleep(std::time::Duration::from_secs(5)),
                     Ok(n) => {
                         tracing::info!("Classified {} items", n);
+                        std::thread::sleep(governor.after_work());
                     }
                     Err(e) => {
                         tracing::warn!("Classify worker error: {}", e);
@@ -460,6 +471,10 @@ impl AppState {
             return;
         }
 
+        // H1：rescan = FileScanner 类，受治理；30 分钟周期任务，单次扫描期间也会
+        // 在每个目录 dir 之间 check should_run 以便快速响应 Pause。
+        let governor = global_registry().register(TaskKind::FileScanner);
+
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30 * 60)); // 30 minutes
@@ -479,6 +494,10 @@ impl AppState {
                 };
 
                 for dir in &dirs {
+                    // H1：每个目录都给 governor 一个机会响应 Pause / 超 budget
+                    while !governor.should_run() {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
                     if dir.path.is_empty() || dir.path.starts_with("webdav:") {
                         continue;
                     }
@@ -520,6 +539,8 @@ impl AppState {
                         }
                         Err(e) => tracing::warn!("Rescan {} failed: {}", dir.path, e),
                     }
+                    drop(vault);
+                    std::thread::sleep(governor.after_work());
                 }
             }
             state.rescan_worker_running.store(false, Ordering::SeqCst);
@@ -536,6 +557,10 @@ impl AppState {
             tracing::debug!("Queue worker already running, skipping");
             return;
         }
+
+        // H1：embedding 队列受 EmbeddingQueue 治理（默认 Balanced 25% CPU / 1GB RAM）。
+        // 此 worker 是 attune-server 生产路径，比 attune-core::queue::QueueWorker 多 flush 逻辑。
+        let governor = global_registry().register(TaskKind::EmbeddingQueue);
 
         std::thread::spawn(move || {
             tracing::info!("Queue worker started");
@@ -555,6 +580,12 @@ impl AppState {
                 };
                 if !vault_unlocked {
                     break;
+                }
+
+                // H1：超 budget 或全局 pause 时短 sleep
+                if !governor.should_run() {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
                 }
 
                 // 检查 embedding + vectors + fulltext 是否就绪
@@ -688,6 +719,9 @@ impl AppState {
                 }
 
                 tracing::debug!("Queue worker processed {} embed tasks", embed_tasks.len());
+
+                // H1：批次完成后退让，让 governor 决定下次 sleep 时长
+                std::thread::sleep(governor.after_work());
             }
 
             // 退出时重置标志 + 最后一次 flush
@@ -722,6 +756,11 @@ impl AppState {
             return;
         }
 
+        // H1：SkillEvolution 受治理 + LLM 速率限制（默认 Balanced 10 calls/h）。
+        // 4 小时检查一次本身已是低频，但仍接入 governor 以便：
+        // (1) 全局 Pause 立即生效  (2) 切档时 LLM 配额自动调整
+        let governor = global_registry().register(TaskKind::SkillEvolution);
+
         std::thread::spawn(move || {
             tracing::info!("Skill evolver started (runs every 4h or at {} signals)",
                 attune_core::skill_evolution::EVOLVE_THRESHOLD);
@@ -737,6 +776,11 @@ impl AppState {
                 };
                 if !vault_unlocked {
                     break;
+                }
+
+                // H1：被 Pause / 超 budget 时跳过本周期（4h 后再试）
+                if !governor.should_run() {
+                    continue;
                 }
 
                 let llm = match state.llm.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned() {
@@ -759,6 +803,12 @@ impl AppState {
                     }
                     // vault 在此处 drop，释放锁
                 };
+
+                // H1：LLM 配额检查
+                if !governor.allow_llm_call() {
+                    tracing::info!("Skill evolver LLM quota exceeded (per-hour cap), skipping cycle");
+                    continue;
+                }
 
                 // Phase 2（无锁）：LLM 调用，可能耗时 15s+
                 let expansions = match attune_core::skill_evolution::generate_expansions(llm.as_ref(), &signals) {

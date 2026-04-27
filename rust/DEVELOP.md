@@ -399,6 +399,46 @@ fn process_batch() -> Result<usize> {
 
 **当前状态**：Worker 结构完整，`process_all()` 可同步处理（测试用），后台 `start()` 尚未在 server 启动时自动启动（Phase 4 补全）。
 
+## 资源治理框架（H1, 2026-04-27）
+
+`attune_core::resource_governor` 提供任务级 CPU/RAM/IO 协作式调度。所有常驻后台 worker 必须接入。详见 [`docs/superpowers/specs/2026-04-27-resource-governor-design.md`](../docs/superpowers/specs/2026-04-27-resource-governor-design.md)。
+
+**关键概念**：`cpu_pct_max` 是**系统全局 CPU 阈值**（不是单进程占用上限）— "系统忙就让让"协作式语义。
+
+### 接入新 worker 的 5 步
+
+```rust
+use attune_core::resource_governor::{global_registry, TaskKind};
+
+// 1. 在 worker 启动时注册 governor（同 TaskKind 多次返回同一 Arc）
+let governor = global_registry().register(TaskKind::EmbeddingQueue);
+
+std::thread::spawn(move || {
+    while running.load(Ordering::SeqCst) {
+        // 2. 每次循环顶部 check should_run（被 pause 或全局 CPU 超阈值时返回 false）
+        if !governor.should_run() {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        match do_work() {
+            Ok(_) => {
+                // 3. 工作成功后让 governor 决定退让时长（throttle）
+                std::thread::sleep(governor.after_work());
+            }
+            Err(_) => std::thread::sleep(POLL_INTERVAL),
+        }
+
+        // 4. （可选）调 LLM 前 check 速率配额
+        // if !governor.allow_llm_call() { continue; }
+
+        // 5. 新增 TaskKind 时，需要在 profiles.rs 三档表 + 30 组合 snapshot 测试同步
+    }
+});
+```
+
+**已 retrofit 的 worker**（W1）：`attune-server::state` 中 `start_classify_worker` / `start_rescan_worker` / `start_queue_worker` / `start_skill_evolver`，均参考 `state.rs` 实际代码。
+
 ## 数据库 Schema
 
 ```sql
