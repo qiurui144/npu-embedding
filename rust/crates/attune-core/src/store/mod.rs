@@ -14,6 +14,7 @@ mod memories;
 mod web_search_cache;
 mod chunk_breadcrumbs;
 pub mod browse_signals;  // pub: BrowseSignalInput / BrowseSignalRow 给 attune-server route 用
+pub mod auto_bookmarks;  // W4 G2: high engagement auto bookmark candidates (G3 staging)
 
 pub use types::*;
 
@@ -303,6 +304,27 @@ CREATE TABLE IF NOT EXISTS browse_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_browse_signals_domain ON browse_signals(domain_hash, created_at_secs DESC);
 CREATE INDEX IF NOT EXISTS idx_browse_signals_created ON browse_signals(created_at_secs DESC);
+
+-- W4 G2 auto bookmark candidates (2026-04-27)
+-- per spec docs/superpowers/specs/2026-04-27-w3-batch-b-design.md §3.G2 + W4 plan G2
+-- 高 engagement 浏览页 (dwell ≥3min + scroll ≥50% + copy ≥1) 自动入候选表，
+-- G3 (W5-6) 后台 worker 抓正文后 promote 到 items + 置 promoted = 1。
+-- url/title 加密同 browse_signals — 候选状态也是用户隐私。
+CREATE TABLE IF NOT EXISTS auto_bookmarks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    url_enc         BLOB NOT NULL,
+    title_enc       BLOB NOT NULL,
+    domain_hash     TEXT NOT NULL,
+    dwell_ms        INTEGER NOT NULL,
+    scroll_pct      INTEGER NOT NULL,
+    copy_count      INTEGER NOT NULL,
+    visit_count     INTEGER NOT NULL,
+    created_at_secs INTEGER NOT NULL,
+    promoted        INTEGER NOT NULL DEFAULT 0,  -- G3 promote to items 后置 1
+    promoted_item_id TEXT                          -- promote 时记录关联 item.id
+);
+CREATE INDEX IF NOT EXISTS idx_auto_bookmarks_pending ON auto_bookmarks(promoted, created_at_secs);
+CREATE INDEX IF NOT EXISTS idx_auto_bookmarks_domain ON auto_bookmarks(domain_hash, created_at_secs DESC);
 "#;
 
 pub struct Store {

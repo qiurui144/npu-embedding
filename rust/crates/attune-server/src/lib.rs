@@ -124,6 +124,11 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/web_search_cache",
                get(routes::web_search_cache::count)
                    .delete(routes::web_search_cache::delete))
+        // G2 Auto bookmark candidates (W4, 2026-04-27)
+        // POST 不暴露：仅由 routes::browse_signals::record_batch high_engagement 路径写
+        .route("/api/v1/auto_bookmarks",
+               get(routes::auto_bookmarks::list)
+                   .delete(routes::auto_bookmarks::delete))
         // Status (full status requires vault access)
         .route("/api/v1/status", get(routes::status::status))
         // Index management

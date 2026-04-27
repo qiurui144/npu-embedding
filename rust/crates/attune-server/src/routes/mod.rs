@@ -1,4 +1,5 @@
 pub mod annotations;
+pub mod auto_bookmarks;
 pub mod behavior;
 pub mod browse_signals;
 pub mod chat;

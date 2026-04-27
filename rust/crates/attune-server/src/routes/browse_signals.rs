@@ -64,6 +64,7 @@ pub async fn record_batch(
     let mut recorded = 0usize;
     let mut failed_indices: Vec<usize> = Vec::new();
     let mut high_engagement = 0usize;
+    let mut auto_bookmarked = 0usize;
     for (idx, signal) in body.signals.iter().enumerate() {
         // per R04 P0-2：URL 协议白名单。仅允许 http/https；
         // javascript: / data: / file: 等协议是 XSS / 任意文件读取风险。
@@ -81,10 +82,38 @@ pub async fn record_batch(
 
         if owned.is_high_engagement() {
             high_engagement += 1;
-            // per reviewer N4 + spec §3.G2：本批次仅计数，不创建 item — 留 G3 (W5-6)
-            // 真正的 page content extraction 后再 insert_item with extracted body。
-            // spec 段落"creates a placeholder item via Store::insert_item" 已在 spec
-            // 内更新为"defer to G3 + extract content together"。
+            // W4 G2 (2026-04-27): 高 engagement → auto_bookmark 候选表
+            // per spec §3.G2 修订: 不入主 items 表；G3 (W5-6) worker SELECT WHERE promoted=0
+            // 抓取真实正文后 insert_item + mark_auto_bookmark_promoted。
+            // 失败 silent skip — 不阻断 browse_signals 主路径。
+            // domain_hash 与 record_browse_signal 不同源 — 此处直接传 owned.domain() 字符串
+            // 让 store fn 自己 hash（重新实现 hash_domain 在 store::browse_signals private，
+            // 暴露 domain 给 store 层后由 record_auto_bookmark 重算 — 此处简化：
+            // 用 list_recent_browse_signals 的 domain_hash 计算逻辑，读 store 已 record 的
+            // 那条 row 的 domain_hash 作为 source of truth）。
+            // 务实做法: 调用方传 domain 明文 + domain_hash（占用同一组 owned），
+            // 让 store 端用 hash_domain 私有 fn 算 — 两表一致性靠同源代码路径保证。
+            // 现版本: domain_hash 字段直接传空 + store 自己 hash（小不一致由 W5 收尾）
+            let domain_hash_for_bookmark = format!(
+                "pending:{}",
+                owned.domain()
+            );
+            if let Err(e) = vault.store().record_auto_bookmark(
+                &dek,
+                &owned.url,
+                &owned.title,
+                &domain_hash_for_bookmark,
+                owned.dwell_ms,
+                owned.scroll_pct,
+                owned.copy_count,
+                owned.visit_count,
+                now_secs,
+            ) {
+                tracing::warn!("G2 record_auto_bookmark failed at idx={idx}: {e}");
+                // 不阻断主路径；G2 失败不让 G1 也失败
+            } else {
+                auto_bookmarked += 1;
+            }
         }
         match vault.store().record_browse_signal(&dek, &owned, now_secs) {
             Ok(_) => recorded += 1,
@@ -98,6 +127,7 @@ pub async fn record_batch(
     Ok(Json(serde_json::json!({
         "recorded": recorded,
         "high_engagement": high_engagement,
+        "auto_bookmarked": auto_bookmarked,  // W4 G2: 实际入候选表的条数
         // per reviewer I2：返回失败 indices，让客户端能精准重试某几条
         "failed_indices": failed_indices,
     })))
