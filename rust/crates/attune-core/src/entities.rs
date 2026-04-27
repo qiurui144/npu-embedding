@@ -1,9 +1,16 @@
-//! 实体抽取：从中文 / 英文文本中抽出 Person / Money / Date / CaseNo / Company 等结构化实体。
+//! 实体抽取：从中文 / 英文文本中抽出 Person / Money / Date / Organization 等结构化实体。
 //!
-//! Sprint 1 Phase B 将使用这些实体计算 Project 推荐归类的"实体重叠度"
+//! Sprint 1 Phase B 用这些实体计算 Project 推荐归类的"实体重叠度"
 //! （spec §2.3 的 0.6 阈值）。
 //!
 //! 设计：纯函数 + 正则 + 中文启发式。无外部 API、无模型推理。
+//!
+//! ## 范围说明（v0.6 OSS 边界瘦身后）
+//!
+//! 本模块只提供**通用领域**实体类型（Person / Money / Date / Organization）。
+//! 行业专属实体（如律师案号 CaseNo / 病历号 / 商标号）由各 vertical plugin
+//! 实现自己的 extractor，注册到 attune-core 的 plugin loader。详见
+//! attune-pro 仓 `INTEGRATION.md` §13 委托清单。
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -11,11 +18,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
-    Person,  // 中文 2-4 字人名
-    Money,   // ¥xxx / 人民币 X 元 / 数额单位
-    Date,    // YYYY-MM-DD / YYYY 年 M 月 D 日
-    CaseNo,  // (YYYY)XX民终/民初/刑初 NNNN 号
-    Company, // 含"有限公司"/"股份公司"/"研究所"等后缀
+    Person,       // 中文 2-4 字人名
+    Money,        // ¥xxx / 人民币 X 元 / 数额单位
+    Date,         // YYYY-MM-DD / YYYY 年 M 月 D 日
+    Organization, // 含"有限公司"/"研究所"/"事务所"/"学校"等通用机构后缀
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,8 +44,7 @@ pub fn extract_entities(text: &str) -> Vec<Entity> {
 
     extract_money(text, &mut out);
     extract_dates(text, &mut out);
-    extract_case_no(text, &mut out);
-    extract_company(text, &mut out);
+    extract_organization(text, &mut out);
     extract_chinese_person(text, &mut out);
 
     out.sort_by_key(|e| e.byte_start);
@@ -102,22 +107,13 @@ fn extract_dates(text: &str, out: &mut Vec<Entity>) {
     }
 }
 
-fn extract_case_no(text: &str, out: &mut Vec<Entity>) {
-    // (2024)京02民终1234号 / (2023)沪01刑初567号 / (2024)粤民申000号 等
-    static CASE_PAT: &str =
-        r"\(\s*\d{4}\s*\)\s*[一-鿿]{1,3}\d{0,3}[一-鿿]{1,4}\d{1,6}\s*号";
-    let re = Regex::new(CASE_PAT).expect("case_no regex compile");
+fn extract_organization(text: &str, out: &mut Vec<Entity>) {
+    // 通用机构后缀：有限公司 / 股份有限公司 / 有限责任公司 / 研究所 / 事务所 / 学校 / 大学
+    // 这些是跨行业通用的（律师 / 医生 / 学者 / 售前 都需要识别"机构"）。
+    static ORG_PAT: &str = r"[一-鿿（）()]{2,15}(?:有限公司|股份有限公司|有限责任公司|研究所|事务所|律师事务所|科技公司|分公司|大学|学院|医院|银行)";
+    let re = Regex::new(ORG_PAT).expect("organization regex compile");
     for m in re.find_iter(text) {
-        push(out, EntityKind::CaseNo, m);
-    }
-}
-
-fn extract_company(text: &str, out: &mut Vec<Entity>) {
-    // 含特定后缀：有限公司 / 股份有限公司 / 有限责任公司 / 研究所 / 事务所 / 学校
-    static COMPANY_PAT: &str = r"[一-鿿（）()]{2,15}(?:有限公司|股份有限公司|有限责任公司|研究所|事务所|律师事务所|科技公司|分公司)";
-    let re = Regex::new(COMPANY_PAT).expect("company regex compile");
-    for m in re.find_iter(text) {
-        push(out, EntityKind::Company, m);
+        push(out, EntityKind::Organization, m);
     }
 }
 
@@ -221,9 +217,9 @@ mod unit_tests {
     }
 
     #[test]
-    fn case_no_basic() {
-        let v = extract_entities("(2024)京02民终1234号");
-        assert_eq!(v[0].kind, EntityKind::CaseNo);
+    fn organization_basic() {
+        let v = extract_entities("某某科技有限公司发布新产品");
+        assert!(v.iter().any(|e| e.kind == EntityKind::Organization));
     }
 
     #[test]
@@ -252,13 +248,12 @@ mod unit_tests {
 
     #[test]
     fn overlap_score_partial() {
-        // 注意：人名抽取启发式会贪婪吞后续 CJK 字（"张三借款" 整体当 4 字人名），
-        // 故输入用空格分隔人名与动词，确保 Person="张三" 干净抽出。
-        let a = extract_entities("张三 借款 ¥10000 (2024)京02民终123号");
-        let b = extract_entities("张三 起诉 ¥20000 (2024)京02民终123号");
-        let s = entity_overlap_score(&a, &b);
-        // 共享：Person 张三 + CaseNo (2024)京02民终123号；不共享：¥10000 / ¥20000
+        // 用通用实体（人名 + 金额 + 公司）测试 Jaccard 相似度
+        // 共享：Person 张三 + Organization 某科技有限公司；不共享：¥10000 / ¥20000
         // intersect = 2, union = 4 → 0.5
+        let a = extract_entities("张三 借款 ¥10000，签约方某科技有限公司");
+        let b = extract_entities("张三 还款 ¥20000，签约方某科技有限公司");
+        let s = entity_overlap_score(&a, &b);
         assert!((s - 0.5).abs() < 0.05, "应 ~0.5（Jaccard），got {s}");
     }
 

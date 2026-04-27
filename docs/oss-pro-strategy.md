@@ -1,7 +1,13 @@
 # OSS × Pro Strategy Framework — Attune
 
-> Status: **v1, 2026-04-27** (W4 deliverable). Living document — review every quarter or
-> when a major decision changes.
+> Status: **v2, 2026-04-27** (revised same day after boundary audit). Living document —
+> review every quarter or when a major decision changes.
+>
+> **v2 changes from v1**: Decisive product positioning — *attune (OSS) = generic personal
+> knowledge base; attune-pro = industry enhancement for personal users; lawcontrol =
+> small-team B2B law-firm solution.* Removed all 4 builtin industry plugins from OSS in
+> v0.6.0-rc.2 (law / presales / patent / tech) — they all moved to `attune-pro` as
+> vertical plugin packs. See §3 Decision 2 for rationale.
 >
 > Audience: Attune Contributors (decision-makers), Pro plugin developers, partners
 > evaluating commercial integration.
@@ -77,31 +83,63 @@ topic distribution. **No basic functionality is gated behind a paywall.**
 
 This is the load-bearing principle. Every future feature decision runs through it.
 
-### Decision 2 — Builtin "basic" plugins stay open as upgrade path
+### Decision 2 — OSS attune ships **zero** industry plugins (v2 update, 2026-04-27)
 
-Today `attune` ships 4 builtin plugins (`tech` / `law` / `presales` / `patent`) — light
-classification + dimension prompts. `attune-pro` has `law-pro` and `presales-pro` with
-deep capabilities (5 capabilities for law-pro alone: contract review, clause lookup,
-drafting, OA reply, risk matrix).
+> **Updated from v1**: Earlier the plan kept 4 builtin plugins (`tech` / `law` / `presales`
+> / `patent`) in OSS as "basic" upgrade-path. After audit + product-positioning clarification,
+> v2 moves **all** industry plugins to `attune-pro`. OSS ships a generic knowledge base —
+> no industry taxonomy at all.
 
-**Rule:** keep the basic plugins in `attune`; rename them in user-facing copy to
-"basic" so the Pro version is positioned as an *upgrade path*, not a replacement.
+**v2 Rule (decisive)**: OSS attune is a **pure generic knowledge base**. Industry
+taxonomy (law / patent / sales / tech / medical / academic) is **only** in `attune-pro`.
 
-| Builtin (OSS) | Pro counterpart | Pro differentiation |
-|---------------|-----------------|---------------------|
-| `tech` (basic classification + code chunker) | `tech-pro` (planned) | Repo scanning, GitHub PR auto-review, IDE integration |
-| `law` (legal taxonomy + dictionary) | `law-pro` ✅ | 5 capabilities: contract review · risk matrix · drafting assistant · OA reply · clause lookup |
-| `presales` (sales taxonomy) | `presales-pro` ✅ | 4 capabilities: competitor analysis · BANT scoring · quotes · demo scripts |
-| `patent` (patent taxonomy + simple search) | `patent-pro` (planned) | Direct patent DB integration · infringement detection · application drafting |
-| _(none yet)_ | `medical-pro` (planned) | Medical terminology · case templates · literature tracking |
-| _(none yet)_ | `academic-pro` (planned) | Citation graphs · paper-writing assistant · reading-list curation |
+| Industry | OSS scope | Pro plugin pack | Pro deep capabilities |
+|----------|-----------|-----------------|---------------------|
+| Legal | _none in OSS_ | `law-pro` ✅ active | 5 capabilities: contract review · risk matrix · drafting · OA reply · clause lookup; CaseNo extractor |
+| Sales / Presales | _none in OSS_ | `presales-pro` ✅ active | 4 capabilities: competitor analysis · BANT scoring · quotes · demo scripts |
+| Patent | _none in OSS_ | `patent-pro` (M3+) | Direct patent DB integration · infringement detection · application drafting |
+| Software / Tech | _none in OSS_ | `tech-pro` (M3+) | Repo scanning · GitHub PR auto-review · IDE integration |
+| Medical | _none in OSS_ | `medical-pro` (planned) | Medical terminology · case templates · literature tracking |
+| Academic | _none in OSS_ | `academic-pro` (planned) | Citation graphs · paper-writing assistant · reading-list curation |
 
-**Why not delete the basic plugins from OSS?** Two reasons:
-1. The OSS user gets a *complete* experience out of the box — no "your dimension list is
-   empty, please subscribe" feeling.
-2. Industry classification quality on basic plugins demonstrates the engine's depth and
-   becomes the credibility ladder to Pro: *"if the basic plugin is already this good,
-   imagine the Pro one."*
+**Why no OSS industry plugins?** Three reasons:
+1. **Strategic positioning** (per `2026-04-27 决策性定位`): OSS attune = generic personal
+   knowledge companion. Industry verticals are the **monetization layer** — they all live
+   in Pro.
+2. **No "kept for demo" risk**: Even keeping `tech` in OSS as a demo would tilt OSS toward
+   "an IT engineer's tool" — that's still industry. True generic = zero industry.
+3. **Clean upgrade path**: User installs OSS attune → uses generic vault / RAG / browse
+   capture → discovers a vertical pain point → installs corresponding Pro plugin pack.
+
+**What was removed in v0.6.0-rc.2**:
+- `assets/plugins/{tech,law,presales,patent}.yaml` — 4 builtin yaml files deleted
+- `entities.rs::EntityKind::CaseNo` + `extract_case_no` — moved to `attune-pro/plugins/law-pro/extractors/case_no.rs`
+- `project_recommender.rs::CHAT_TRIGGER_KEYWORDS` const — replaced with plugin-aggregated list (empty when OSS-only, populated when Pro plugins installed)
+
+### Decision 2.5 — Three-product matrix (v2 new)
+
+> attune (OSS) × attune-pro × lawcontrol = **三角矩阵**
+
+| Product | License | Form | User group | Content |
+|---------|---------|------|------------|---------|
+| **attune (OSS)** | Apache-2.0 | Tauri desktop / Chrome extension, single-machine vault | **Personal generic users** | Pure generic knowledge base — RAG / encryption / browse capture / auto bookmark / MCP / benchmark — **zero industry binding** |
+| **attune-pro** | Proprietary | Plugin pack (.attunepkg signed), loaded by attune | **Personal industry users** (lawyer / doctor / scholar / presales / engineer / patent agent) | 6 vertical packs: law-pro / presales-pro / medical-pro / academic-pro / patent-pro / tech-pro |
+| **lawcontrol** | Proprietary | Django + Vue + 19 container B2B SaaS | **Law firm / small team** (RBAC / multi-tenant / multi-channel) | Industry small-team solution |
+
+**Equation**:
+- Personal generic user = `attune (OSS)`
+- Personal industry user = `attune (OSS)` + `attune-pro/<vertical>-pro`
+- Industry small team = `lawcontrol`
+
+**Admission rules** (decisive — every new feature passes through):
+- A feature enters **OSS attune** iff it has value to **any** personal generic user (notes / docs / browsing / cross-device / encryption / search)
+- A feature enters **attune-pro** iff it has value to a personal user **of a specific industry** (lawyer contract review / doctor case analysis / engineer code scan / presales BANT)
+- A feature enters **lawcontrol** iff it has value **only in law-firm B2B team scenarios** (multi-tenant / RBAC / case assignment / multi-user collaboration)
+
+The three are technically independent (no cross-product runtime dependency). A shared
+"industry knowledge" layer (law prompts / case schema) may eventually live as a git
+submodule (`legal-prompts-pack`) in M3+ commercialization — kept separate from any
+single product's repo.
 
 ### Decision 3 — Monetization: 5 subscription tiers + hardware
 
@@ -145,9 +183,10 @@ decision changes; everyone references it.
 | Citation | B1 citation deep-link, F2 breadcrumb sidecar with at-rest encryption | ✅ |
 | Browser | G1 generic browse capture + opt-out + HARD_BLACKLIST + G5 privacy panel + G2 auto-bookmark staging | ✅ |
 | Web | C1 web-search cache + DELETE/GET routes (W4-002) | ✅ |
-| Plugin framework | plugin.yaml, dimension schema, builtin loader, marketplace toggle (W4 E1) | ✅ |
+| Plugin framework | plugin.yaml schema, dimension schema, plugin loader, EntityExtractor trait, marketplace toggle (W4 E1) | ✅ |
 | Profile | Topic distribution API (W4 F1), import/export | ✅ |
-| Builtin plugins | tech / law / presales / patent — basic dimensions + light classification | ✅ |
+| Builtin industry plugins | **none** (v0.6.0-rc.2 onwards — moved to attune-pro per Decision 2 v2) | ❌ |
+| Generic Entity extractors | Person / Money / Date / Organization (no industry-specific) | ✅ |
 | Distribution | Tauri desktop (Linux deb/AppImage, Windows MSI/NSIS), Chrome extension | ✅ |
 | MCP integration | Python stdio shim (`tools/attune_mcp_shim.py`) wrapping REST | ✅ |
 | Quality | RAGAS-style benchmark harness + bilingual methodology doc | ✅ |
@@ -158,9 +197,11 @@ decision changes; everyone references it.
 
 | Domain | Feature | Tier required |
 |--------|---------|---------------|
-| Vertical plugins | `law-pro` (5 capabilities: contract review / risk matrix / drafting / OA / clause lookup) | Pro |
-| Vertical plugins | `presales-pro` (4 capabilities: competitor / BANT / quote / demo script) | Pro |
-| Vertical plugins | `medical-pro`, `academic-pro`, `patent-pro`, `tech-pro` (planned) | Pro |
+| Vertical plugins | `law-pro` (active): builtin/dimensions.yaml + 5 capabilities (contract review / risk matrix / drafting / OA / clause lookup) + CaseNo extractor | Pro |
+| Vertical plugins | `presales-pro` (active): builtin/dimensions.yaml + 4 capabilities (competitor / BANT / quote / demo script) | Pro |
+| Vertical plugins | `patent-pro` (scaffolded v0.6.0-rc.2): builtin/dimensions.yaml + capabilities (M3+) | Pro |
+| Vertical plugins | `tech-pro` (scaffolded v0.6.0-rc.2): builtin/dimensions.yaml + capabilities (M3+) | Pro |
+| Vertical plugins | `medical-pro`, `academic-pro` (planned M3+) | Pro |
 | Multi-vertical | All vertical packs in one license | Pro+ |
 | Sync service | `cloud-sync` — DEK never leaves device, only encrypted blobs synced | Pro+ |
 | Plugin marketplace | `plugin-registry` — signed third-party plugin distribution + private internal plugins | Team |
@@ -171,17 +212,32 @@ decision changes; everyone references it.
 | Support | Industry consulting, custom prompt tuning, dedicated CSM | Enterprise |
 | Hardware | K3 appliance OS image with bundled Qwen 1.5B + on-site setup + remote support | K3 SKU |
 
-### 4.3 Decision rules for new features
+### 4.3 Decision rules for new features (v2 — three-product matrix)
 
 When a contributor proposes a feature, ask in this order:
 
-1. **Does it benefit a solo individual user?** If yes, candidate for OSS.
-2. **Does it require centralized infrastructure (hosted service, billing, multi-tenant)?**
-   If yes, it goes Pro regardless of who could use it.
-3. **Is it a vertical-specific deep capability (industry RPA, compliance template,
-   domain-specific taxonomy)?** If yes, it's a Pro plugin.
-4. **Is it a single-org operational concern (SSO, audit, on-prem)?** Pro Team or Enterprise.
-5. **None of the above?** Default to OSS — be biased toward openness.
+1. **Is it specific to law-firm B2B team workflows** (multi-tenant / RBAC / case
+   assignment / multi-user collaboration)? → goes to **lawcontrol** (separate product).
+2. **Is it specific to one industry** (lawyer / doctor / scholar / presales / engineer /
+   patent agent)? → goes to **attune-pro** as a vertical plugin pack.
+3. **Does it require centralized infrastructure** (hosted service, billing, multi-tenant
+   coordination, signed plugin distribution)? → goes to **attune-pro** services layer.
+4. **Does it benefit any personal generic user, regardless of industry?** → goes to
+   **OSS attune** (default).
+
+**Examples** (decisive — these have caused past confusion):
+
+| Feature proposal | Verdict |
+|------------------|---------|
+| CaseNo extractor (Chinese legal case number regex) | ❌ OSS — moved to attune-pro/law-pro/extractors/ in v0.6.0-rc.2 |
+| Project recommender keyword "案件/诉讼" hardcoded | ❌ OSS — replaced with plugin-aggregated list in v0.6.0-rc.2 |
+| Industry classification dimensions (law / patent / sales / tech taxonomy) | ❌ OSS — all 4 builtin yaml deleted in v0.6.0-rc.2; moved to attune-pro/<vertical>-pro/builtin/ |
+| Generic Project / Timeline / Annotation CRUD | ✅ OSS — every personal user wants project organization |
+| Workflow engine + deterministic ops (find_overlap / write_annotation) | ✅ OSS — generic engine; specific industry workflows are Pro plugin yaml content |
+| MCP outlet shim | ✅ OSS — every personal user with an MCP client benefits |
+| RAGAS benchmark harness | ✅ OSS — every personal user benefits from quality validation |
+| Multi-vault sync, audit log, SSO | ❌ OSS — Pro+ / Team / Enterprise (centralized infra) |
+| Shared cases / multi-user collab / RBAC | ❌ OSS, ❌ Pro — these are **lawcontrol** territory (B2B teams only) |
 
 ---
 
@@ -289,8 +345,10 @@ This is what a third-party plugin developer needs to know:
 | 2026-04-27 | Browser extension = generic browse-state knowledge source (not just AI chat) | Active (W3 batch B shipped) |
 | 2026-04-27 | Resource governance baseline: every background task throttled (H1) | Active (W3 W1 shipped) |
 | 2026-04-27 | Bilingual docs mandatory for all public-facing material | Active |
-| **2026-04-27** | **OSS-Pro split = Thick OSS-core (this document) ratifies prior architecture** | **Active (this doc v1)** |
-| **2026-04-27** | **Pricing: ¥99 / ¥299 / ¥999/mo / Custom + ¥6,999 K3** | **Proposed (this doc v1)** |
+| 2026-04-27 (v1) | OSS-Pro split = Thick OSS-core; pricing ¥99 / ¥299 / ¥999/mo / Custom + ¥6,999 K3 | **Superseded by v2** (positioning audit found OSS too thick in industry direction) |
+| **2026-04-27 (v2)** | **Three-product matrix: attune (OSS, generic) × attune-pro (industry vertical for personal) × lawcontrol (B2B small team). OSS ships zero industry plugins.** | **Active** |
+| **2026-04-27 (v2)** | **v0.6.0-rc.2 boundary trim: deleted 4 builtin yaml + CaseNo extractor + CHAT_TRIGGER_KEYWORDS const; moved all to attune-pro plugin packs** | **Active** |
+| **2026-04-27 (v2)** | **Pricing: simplified — keep v1 numbers, defer detailed tier strategy to M3 commercialization (per "暂时没有任何用户，都可以转身" 用户授权)** | **Active** |
 
 ---
 

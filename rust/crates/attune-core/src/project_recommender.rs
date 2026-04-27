@@ -5,6 +5,17 @@
 //! - chat 用户消息含触发关键词 → recommend_for_chat 提示用户"是否要找/建 Project"
 //!
 //! 推荐结果**不持久化**：通过 WebSocket 推送给前端；前端如果错过，下次同样路径再算即可。
+//!
+//! ## v0.6 边界瘦身后的关键词来源
+//!
+//! 触发关键词不再硬编码到 attune-core（之前 hardcode 了"案件/案号/诉讼"等律师专属词）。
+//! 改为由调用方（attune-server route handler）从 PluginRegistry 聚合所有已加载
+//! vertical plugin 的 `chat_trigger.project_keywords` 字段后传入。
+//!
+//! - OSS attune 裸装（无 vertical plugin）→ keywords = []，永不触发推荐
+//! - 装 attune-pro/law-pro → keywords = ["案件","案号","客户","项目","诉讼","案子"] → 触发律师场景
+//! - 装 attune-pro/presales-pro → keywords += ["客户","商机","RFP","POC"] → 触发售前场景
+//! - 多 vertical 同时装 → keywords = 各 plugin 列表的并集
 
 use crate::entities::{entity_overlap_score, Entity};
 use crate::error::Result;
@@ -33,9 +44,6 @@ pub struct ChatTriggerHint {
 
 /// spec §2.3 阈值
 pub const RECOMMEND_THRESHOLD: f32 = 0.6;
-
-/// 触发关键词（中文常见关于"案件 / 客户 / 项目"语义）。
-const CHAT_TRIGGER_KEYWORDS: &[&str] = &["案件", "案号", "客户", "项目", "诉讼", "案子"];
 
 /// 给一份新文件（或新 chunk）算应该归到哪个 Project。
 ///
@@ -88,11 +96,17 @@ pub fn recommend_for_file(
 
 /// 给一段 chat 用户消息检测是否含 Project 触发关键词。
 ///
+/// keywords 由调用方传入（典型来源：PluginRegistry 聚合各 vertical plugin 的
+/// `chat_trigger.project_keywords` 列表）。空 keywords 永不触发（裸装 OSS 默认行为）。
+///
 /// 不调 LLM，纯关键词匹配。命中即返回 ChatTriggerHint。无命中返回 None。
-pub fn recommend_for_chat(message: &str) -> Option<ChatTriggerHint> {
+pub fn recommend_for_chat(message: &str, keywords: &[&str]) -> Option<ChatTriggerHint> {
+    if keywords.is_empty() {
+        return None;
+    }
     let mut matched = Vec::new();
-    for kw in CHAT_TRIGGER_KEYWORDS {
-        if message.contains(kw) {
+    for kw in keywords {
+        if message.contains(*kw) {
             matched.push(kw.to_string());
         }
     }
@@ -120,21 +134,33 @@ mod unit_tests {
     }
 
     #[test]
+    fn empty_keywords_never_triggers() {
+        // OSS 裸装默认行为：无 vertical plugin → 不触发
+        assert!(recommend_for_chat("帮我整理这个项目的文件", &[]).is_none());
+    }
+
+    #[test]
     fn chat_keyword_basic() {
-        let h = recommend_for_chat("帮我整理这个案件的证据").expect("hit");
-        assert!(h.matched_keywords.contains(&"案件".to_string()));
+        // 调用方传入通用关键词时正常触发
+        let h = recommend_for_chat("帮我整理这个项目的文件", &["项目"]).expect("hit");
+        assert!(h.matched_keywords.contains(&"项目".to_string()));
     }
 
     #[test]
     fn chat_keyword_multiple() {
-        let h = recommend_for_chat("这个客户的项目我们整理一下").expect("hit");
+        // 多关键词命中
+        let h = recommend_for_chat(
+            "这个客户的项目我们整理一下",
+            &["客户", "项目", "topic"],
+        )
+        .expect("hit");
         assert!(h.matched_keywords.contains(&"客户".to_string()));
         assert!(h.matched_keywords.contains(&"项目".to_string()));
     }
 
     #[test]
     fn chat_no_keyword() {
-        assert!(recommend_for_chat("今天天气怎样").is_none());
+        assert!(recommend_for_chat("今天天气怎样", &["项目", "客户"]).is_none());
     }
 
     #[test]

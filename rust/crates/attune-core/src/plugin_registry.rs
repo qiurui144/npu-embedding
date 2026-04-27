@@ -68,6 +68,33 @@ impl PluginRegistry {
         self.plugins.values().filter(move |p| p.manifest.plugin_type == ptype)
     }
 
+    /// v0.6 新增：聚合所有 plugin 的 chat_trigger.project_keywords（去重后返回）
+    ///
+    /// project_recommender::recommend_for_chat 调用方典型用法：
+    /// ```ignore
+    /// let kws: Vec<&str> = state.plugin_registry.all_chat_trigger_project_keywords()
+    ///     .into_iter()
+    ///     .collect();
+    /// recommend_for_chat(&user_msg, &kws);
+    /// ```
+    /// OSS 裸装 → plugins 空 → 返空 Vec → recommend_for_chat 永不触发。
+    pub fn all_chat_trigger_project_keywords(&self) -> Vec<&str> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut out: Vec<&str> = Vec::new();
+        for p in self.plugins.values() {
+            if let Some(ct) = p.manifest.chat_trigger.as_ref() {
+                for kw in &ct.project_keywords {
+                    let s = kw.as_str();
+                    if seen.insert(s) {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// 扫描 plugins_root 下每个一级子目录作为一个 plugin。
     /// 每个 plugin dir 必须有 `plugin.yaml`；可选 `workflows/*.yaml` 和 `capabilities/<cap_id>/plugin.yaml`。
     ///

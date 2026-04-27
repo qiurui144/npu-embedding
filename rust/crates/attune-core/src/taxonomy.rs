@@ -45,10 +45,13 @@ impl Plugin {
     }
 }
 
-const TECH_PLUGIN_YAML: &str = include_str!("../assets/plugins/tech.yaml");
-const LAW_PLUGIN_YAML: &str = include_str!("../assets/plugins/law.yaml");
-const PRESALES_PLUGIN_YAML: &str = include_str!("../assets/plugins/presales.yaml");
-const PATENT_PLUGIN_YAML: &str = include_str!("../assets/plugins/patent.yaml");
+// v0.6 OSS 边界瘦身（per docs/oss-pro-strategy.md v2）：
+// 行业 builtin plugins (law / presales / patent / tech) 全部迁移到 attune-pro 仓的
+// plugins/<vertical>-pro/builtin/dimensions.yaml。OSS attune 不再内置任何行业分类维度。
+//
+// 加载顺序：attune-server 启动 → load_builtin_plugins() 返回空 Vec
+// → 用户安装 vertical plugin pack (attune-pro/.attunepkg) 后从 plugin_registry 动态加载
+// 详见 attune-pro/INTEGRATION.md §13 OSS 委托给 Pro 的 vertical-specific functionality。
 
 pub struct Taxonomy {
     pub core: Vec<Dimension>,
@@ -93,23 +96,18 @@ impl Taxonomy {
         }
     }
 
+    /// v0.6 OSS 瘦身：返回空列表（行业 builtin 全部迁移到 attune-pro）。
+    /// 保留 fn 签名兼容现有 attune-server::state.rs 调用。
     pub fn load_builtin_plugins() -> Result<Vec<Plugin>> {
-        Ok(vec![
-            Plugin::from_yaml(TECH_PLUGIN_YAML)?,
-            Plugin::from_yaml(LAW_PLUGIN_YAML)?,
-            Plugin::from_yaml(PRESALES_PLUGIN_YAML)?,
-            Plugin::from_yaml(PATENT_PLUGIN_YAML)?,
-        ])
+        Ok(Vec::new())
     }
 
+    /// v0.6 OSS 瘦身：所有 id 都返 unknown（无 builtin 行业 plugin）。
+    /// 行业插件由 attune-pro/.attunepkg 安装后通过 PluginRegistry::scan 动态加载。
     pub fn load_builtin_plugin(id: &str) -> Result<Plugin> {
-        match id {
-            "tech" => Plugin::from_yaml(TECH_PLUGIN_YAML),
-            "law" => Plugin::from_yaml(LAW_PLUGIN_YAML),
-            "presales" => Plugin::from_yaml(PRESALES_PLUGIN_YAML),
-            "patent" => Plugin::from_yaml(PATENT_PLUGIN_YAML),
-            _ => Err(VaultError::Taxonomy(format!("unknown builtin plugin: {id}"))),
-        }
+        Err(VaultError::Taxonomy(format!(
+            "no builtin plugin '{id}': install attune-pro vertical plugin pack instead"
+        )))
     }
 
     /// 从 {config_dir}/plugins/*.yaml 加载用户插件
@@ -371,62 +369,36 @@ mod tests {
     }
 
     #[test]
-    fn load_builtin_plugins_works() {
+    fn load_builtin_plugins_returns_empty() {
+        // v0.6 OSS 瘦身：行业 builtin 全部迁到 attune-pro
         let plugins = Taxonomy::load_builtin_plugins().unwrap();
-        assert_eq!(plugins.len(), 4);
-        let ids: Vec<&str> = plugins.iter().map(|p| p.id.as_str()).collect();
-        assert!(ids.contains(&"tech"));
-        assert!(ids.contains(&"law"));
-        assert!(ids.contains(&"presales"));
-        assert!(ids.contains(&"patent"));
+        assert!(plugins.is_empty(), "OSS 不应内置任何行业 plugin");
     }
 
     #[test]
-    fn patent_plugin_dimensions() {
-        let patent = Taxonomy::load_builtin_plugin("patent").unwrap();
-        assert_eq!(patent.dimensions.len(), 4);
-        let ipc = patent.dimensions.iter().find(|d| d.name == "ipc_class").unwrap();
-        assert!(matches!(ipc.cardinality, Cardinality::Multi { max: 5 }));
-        let stage = patent.dimensions.iter().find(|d| d.name == "filing_stage").unwrap();
-        assert!(matches!(stage.value_type, ValueType::Closed));
-        assert!(stage.suggested_values.contains(&"技术交底书".to_string()));
+    fn load_builtin_plugin_unknown_for_all_ids() {
+        // 所有原 builtin id 都不再可用
+        for id in ["tech", "law", "presales", "patent", "anything"] {
+            assert!(
+                Taxonomy::load_builtin_plugin(id).is_err(),
+                "load_builtin_plugin('{id}') 应返 unknown"
+            );
+        }
     }
 
     #[test]
-    fn tech_plugin_dimensions() {
-        let tech = Taxonomy::load_builtin_plugin("tech").unwrap();
-        assert_eq!(tech.dimensions.len(), 3);
-        let stack = tech.dimensions.iter().find(|d| d.name == "stack_layer").unwrap();
-        assert!(matches!(stack.cardinality, Cardinality::Multi { max: 3 }));
-        assert!(matches!(stack.value_type, ValueType::Hybrid));
-        assert!(stack.suggested_values.contains(&"后端".to_string()));
-    }
-
-    #[test]
-    fn law_plugin_dimensions() {
-        let law = Taxonomy::load_builtin_plugin("law").unwrap();
-        assert_eq!(law.dimensions.len(), 5);
-        let risk = law.dimensions.iter().find(|d| d.name == "risk_level").unwrap();
-        assert!(matches!(risk.value_type, ValueType::Closed));
-    }
-
-    #[test]
-    fn presales_plugin_dimensions() {
-        let presales = Taxonomy::load_builtin_plugin("presales").unwrap();
-        assert_eq!(presales.dimensions.len(), 4);
-        let stage = presales.dimensions.iter().find(|d| d.name == "bid_stage").unwrap();
-        assert!(matches!(stage.value_type, ValueType::Closed));
-    }
-
-    #[test]
-    fn build_system_prompt_includes_dimensions() {
-        let tech = Taxonomy::load_builtin_plugin("tech").unwrap();
-        let t = Taxonomy::default().with_plugin(tech);
+    fn build_system_prompt_with_user_plugin() {
+        // 用临时 user plugin 测 build_system_prompt 仍 work（不再依赖 builtin tech）
+        let custom = Plugin::from_yaml(
+            "id: demo\nname: demo\nversion: \"1.0\"\ndescription: demo\ndimensions:\n  - name: foo\n    label: Foo\n    description: foo dim\n    cardinality:\n      type: Single\n    value_type:\n      type: Open\n    suggested_values: []\n",
+        )
+        .unwrap();
+        let t = Taxonomy::default().with_plugin(custom);
         let prompt = t.build_system_prompt();
         assert!(prompt.contains("domain"));
         assert!(prompt.contains("topic"));
         assert!(prompt.contains("difficulty"));
-        assert!(prompt.contains("stack_layer"));
+        assert!(prompt.contains("foo"));
         assert!(prompt.contains("JSON"));
     }
 

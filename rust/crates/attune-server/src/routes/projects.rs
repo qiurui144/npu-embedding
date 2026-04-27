@@ -1,4 +1,4 @@
-//! Project / Case 卷宗 REST API（spec §2.3）
+//! Project 卷宗 REST API（spec §2.3）— 通用项目/卷宗管理（不绑定具体行业）
 //!
 //! 6 endpoints：
 //! - POST   /api/v1/projects                     创建项目

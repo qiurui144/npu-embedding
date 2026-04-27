@@ -23,21 +23,12 @@ fn extract_chinese_dates() {
 }
 
 #[test]
-fn extract_case_no() {
-    let text = "本案案号 (2024)京02民终1234号，承办法官张三。";
+fn extract_organization_suffix() {
+    let text = "甲方：北京云麓科技有限公司，乙方：上海某某有限责任公司，研究方：清华大学。";
     let ents = extract_entities(text);
-    let cases: Vec<&Entity> = ents.iter().filter(|e| e.kind == EntityKind::CaseNo).collect();
-    assert_eq!(cases.len(), 1);
-    assert!(cases[0].value.contains("(2024)京02民终1234号"));
-}
-
-#[test]
-fn extract_company_suffix() {
-    let text = "甲方：北京云麓科技有限公司，乙方：上海某某有限责任公司。";
-    let ents = extract_entities(text);
-    let companies: Vec<&Entity> = ents.iter().filter(|e| e.kind == EntityKind::Company).collect();
-    assert!(companies.len() >= 2, "至少应抽两个公司");
-    assert!(companies.iter().any(|e| e.value.contains("北京云麓科技有限公司")));
+    let orgs: Vec<&Entity> = ents.iter().filter(|e| e.kind == EntityKind::Organization).collect();
+    assert!(orgs.len() >= 2, "至少应抽两个机构");
+    assert!(orgs.iter().any(|e| e.value.contains("北京云麓科技有限公司")));
 }
 
 #[test]
@@ -62,7 +53,7 @@ fn empty_text_returns_empty() {
 fn no_entities_text_returns_empty() {
     let ents = extract_entities("the quick brown fox jumps over the lazy dog");
     let chinese_kinds: Vec<&Entity> = ents.iter()
-        .filter(|e| matches!(e.kind, EntityKind::Person | EntityKind::Company | EntityKind::CaseNo))
+        .filter(|e| matches!(e.kind, EntityKind::Person | EntityKind::Organization))
         .collect();
     assert!(chinese_kinds.is_empty(), "纯英文不应误抽中文实体");
 }

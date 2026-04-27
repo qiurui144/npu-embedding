@@ -212,20 +212,20 @@ pub struct AnnotationInput {
 }
 
 // ============================================================================
-// Project / Case 卷宗（spec §2.1）
+// Project 通用卷宗（spec §2.1）
 // ============================================================================
 
 /// 通用 Project 类型：行业层（attune-pro 系列插件）通过 metadata_encrypted
 /// 持有自己 schema 的 opaque blob。attune-core 仅负责 kind 路由 + 时间线 + 文件归属，
-/// **不约束** kind 的取值集合 — 任意行业字符串（'generic' / 'case' / 'deal' / 'topic' /
-/// 插件自定义）都被允许，由调用方自行约定。
+/// **不约束** kind 的取值集合 — 任意行业字符串（'generic' / 'topic' / 任意 plugin 自定义）
+/// 都被允许，由调用方自行约定。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub title: String,
-    /// 'generic' / 'case' / 'deal' / 'topic' / 任意 plugin 自定义类型 — attune-core 不约束。
+    /// 'generic' / 'topic' / 任意 plugin 自定义类型 — attune-core 不约束。
     pub kind: String,
-    /// 行业层在此存 opaque blob（如 attune-pro/law 的 case_no/parties/court 序列化 + AES-GCM 加密）。
+    /// 行业层在此存 opaque blob（行业插件序列化自己 schema 后 AES-GCM 加密）。
     /// attune-core 不解析。
     pub metadata_encrypted: Option<Vec<u8>>,
     pub created_at: i64,

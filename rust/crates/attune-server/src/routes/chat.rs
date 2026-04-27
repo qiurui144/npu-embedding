@@ -72,7 +72,18 @@ pub async fn chat(
     // Sprint 1 Phase B: chat keyword trigger for project recommendation
     // 纯 observer：检测当前 user message 中的项目相关关键词，命中即通过 broadcast 推 ws hint，
     // 不影响主流程（错误静默忽略，broadcast 无订阅者也只返回 Err 不 panic）
-    if let Some(hint) = attune_core::project_recommender::recommend_for_chat(&body.message) {
+    //
+    // v0.6 边界瘦身：keywords 不再硬编码到 attune-core，由 PluginRegistry 聚合各
+    // vertical plugin 的 chat_trigger.project_keywords 后传入。无 plugin 时 = []，永不触发。
+    let project_keywords: Vec<&str> = state
+        .plugin_registry
+        .all_chat_trigger_project_keywords()
+        .into_iter()
+        .collect();
+    if let Some(hint) = attune_core::project_recommender::recommend_for_chat(
+        &body.message,
+        &project_keywords,
+    ) {
         let payload = serde_json::json!({
             "type": "project_recommendation",
             "trigger": "chat_keyword",

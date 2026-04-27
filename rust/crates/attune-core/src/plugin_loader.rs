@@ -110,13 +110,20 @@ pub struct ChatTrigger {
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
 
-    /// 是否要求 chat 上下文有 pending file（如 contract_review 需要文件）
+    /// 是否要求 chat 上下文有 pending file（如某些深度 skill 需要文件）
     #[serde(default)]
     pub requires_document: bool,
 
     /// 短描述（UI 展示）
     #[serde(default)]
     pub description: String,
+
+    /// v0.6 新增：Project 推荐归类的触发关键词列表（如 ["案件","客户","项目"]）。
+    /// 用户在 chat 中输入这些词时，project_recommender 弹出"是否归到 Project"提示。
+    /// 由 PluginRegistry::all_chat_trigger_project_keywords 聚合所有 plugin 的列表。
+    /// 不填或空 = 该 plugin 不贡献关键词。OSS attune 默认无 plugin → 列表 [] → 永不触发。
+    #[serde(default)]
+    pub project_keywords: Vec<String>,
 }
 
 impl Default for ChatTrigger {
@@ -131,6 +138,7 @@ impl Default for ChatTrigger {
             exclude_patterns: Vec::new(),
             requires_document: false,
             description: String::new(),
+            project_keywords: Vec::new(),
         }
     }
 }
