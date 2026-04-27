@@ -2,6 +2,43 @@
 
 ## 开发中
 
+## W3 Batch C: K2 Parse Golden Set Baseline (2026-04-27)
+
+12-week 战略 v4 W3 F-P0c batch C **收官**。建立 chunker / parser 质量门槛，防止后续 chunker 改动悄悄回归。来源：Readwise Reader 200 页 parsing benchmark + CI 95% 阈值方法论（per ACKNOWLEDGMENTS K 系列）。
+
+### K2 Parse Golden Set baseline（5 fixtures）
+- `tests/fixtures/parse_corpus/manifest.yaml` — 5 fixture 描述（id / file / source / pinned_version / license + expected: title_contains / min_text_chars / must_contain_phrases / section_count_min / section_paths_must_include）
+- 5 个 markdown fixture（覆盖 4 个领域 + 双语）：
+  - 001 rust-lang/book ch4 'What Is Ownership' (en, MIT/Apache-2.0)
+  - 002 中华人民共和国民法典节选 (zh, 公开法律文本)
+  - 003 tech blog post — microservices vs monolith (en, attune-internal)
+  - 004 news article — EU AI Act (en, attune-internal)
+  - 005 academic paper review — Attention Is All You Need (en, attune-internal)
+- `tests/parse_golden_set_regression.rs`：8 测试（manifest loads + files exist + min_rate gate + 5 per-fixture pass）
+- Regression gate：`min_pass_rate=1.0`（5 篇必须全过，扩 200 时降到 0.95）
+
+### 与 J6 W4 benchmark 的关系
+- J6 测**检索质量**（query → expected hits），用 `rust/tests/golden/queries.json`
+- K2 测**parser/chunker 质量**（page → expected sections），用 `tests/fixtures/parse_corpus/`
+- 两个 golden set 同期跑，构成 attune 完整质量基线
+
+### W3 batch C 不做（推到 W4 / W5-6）
+- ❌ 200 篇真实页面采集 — 需 1-2 天 corpus 工作（W4）
+- ❌ GitHub Actions CI 集成（W4 与 J6 一起接入 benchmark CI）
+- ❌ Per-language fixture 矩阵扩展（当前 5 篇含 1 zh + 4 en，足够 baseline）
+- ❌ PDF parsing fixture（独立 golden set，W5-6）
+- ❌ Readability.js style content extraction baseline（阻塞 G3，W5-6）
+
+### W3 全量收官（A + B + C）
+| Batch | Commit | 主交付 | 测试 +N |
+|-------|--------|-------|---------|
+| A `28bd691` | F2 placeholder 关闭 + C1 web cache + F1 + F4 | +16 lib + 7 集成 |
+| B `674cf55` | G1 浏览信号全栈 + G5 隐私面板 + F3 E2E | +7 lib + 5 集成 |
+| C 本次 | K2 Parse Golden Set | +8 集成 |
+| **W3 总计** | 3 commits | +23 lib + **20 集成** |
+
+attune-core lib 测试 415 (W2 末) → **438**（+23），集成测试套件 3 → **6**（+governor + memory + rag_w2 + rag_w3_batch_a + rag_w3_batch_b + parse_golden_set）。
+
 ## W3 Batch B: G1 + G2 + G5 + F3 (2026-04-27)
 
 12-week 战略 v4 Phase 1 W3 F-P0c batch B 全栈交付。**Chrome 扩展从"AI 对话捕获器"升级为"通用浏览状态知识源"** + 隐私控制面板 + W2 batch 1 followup F3 关闭。所有抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。

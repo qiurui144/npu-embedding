@@ -35,6 +35,15 @@ For full software-license attribution of dependencies, see `Cargo.lock` (Rust) a
 | [mem0ai/mem0](https://github.com/mem0ai/mem0) (Apache-2.0) | "Memory layer for AI" framing; episodic memory as a discrete data model above raw chunks |
 | [skill_evolution.rs] (attune internal, 2026-03) | Three-stage lock release pattern (prepare → generate → apply) was already established by SkillEvolver; A1 mirrors it directly |
 
+### W3 Batch C — K2 Parse Golden Set Baseline (2026-04-27)
+
+| Source | What we adopted |
+|--------|----------------|
+| [Readwise Reader engineering](https://blog.readwise.io/the-next-chapter-of-reader-public-beta/) (commercial blog, methodology only) | "200 page parsing benchmark + CI < 95% blocks release" methodology — attune K2 directly adopts pinned-version corpus + per-fixture expected output structure + regression gate |
+| [rust-lang/book](https://github.com/rust-lang/book) (MIT/Apache-2.0) | Fixture 001: ch4 'What Is Ownership' — 用作 en 技术文档 baseline |
+| 中华人民共和国民法典 | Fixture 002: 总则 + 物权节选 — 公开法律文本，用作 zh + 嵌套标题 baseline |
+| Vaswani et al. "Attention Is All You Need" (arXiv:1706.03762) | Fixture 005: 改写自该论文 abstract / sections — 用作学术论文 baseline。**改写非引用**，attune-internal sample license |
+
 ### W3 Batch B — G1 / G2 / G5 / F3 (2026-04-27)
 
 | Source | What we adopted |

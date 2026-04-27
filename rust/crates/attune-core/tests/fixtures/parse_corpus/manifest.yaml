@@ -1,0 +1,102 @@
+# K2 Parse Golden Set baseline manifest (W3 batch C, 2026-04-27)
+# per spec docs/superpowers/specs/2026-04-27-w3-batch-c-design.md
+# 来源参照：Readwise Reader 200 篇 parsing benchmark + CI 95% 阈值方法论
+#
+# 每个 fixture 描述 attune chunker (extract_sections_with_path) 应输出的预期：
+#   - title_contains: chunker 第一段或文档第一行应含的子串
+#   - min_text_chars: 文档总字符数下界（防止 fixture 文件被意外清空）
+#   - must_contain_phrases: 全文必须包含的关键短语
+#   - section_count_min: extract_sections_with_path 切出的 section 数下限
+#   - section_paths_must_include: 必须出现的 section path（list of list-of-string）
+#
+# Regression gate: 5 篇必须全过（MIN_PASS_RATE=1.0）；扩 200 篇时降到 0.95
+
+fixtures:
+  - id: "001-rust-ownership"
+    file: "001-rust-ownership.md"
+    source: "rust-lang/book ch4 'What Is Ownership' 节选"
+    pinned_version: "trpl-v0.3.0"
+    license: "MIT/Apache-2.0"
+    expected:
+      title_contains: ["Ownership"]
+      min_text_chars: 800
+      must_contain_phrases:
+        - "ownership"
+        - "scope"
+      section_count_min: 4
+      section_paths_must_include:
+        - ["What Is Ownership?"]
+        - ["What Is Ownership?", "Ownership Rules"]
+        - ["What Is Ownership?", "Variable Scope"]
+        - ["What Is Ownership?", "The String Type"]
+
+  - id: "002-china-civil-code"
+    file: "002-china-civil-code.md"
+    source: "中华人民共和国民法典 总则 + 物权 节选"
+    pinned_version: "2020-05-28 colour"
+    license: "公开法律文本"
+    expected:
+      title_contains: ["民法典"]
+      min_text_chars: 300
+      must_contain_phrases:
+        - "民事主体"
+        - "权利"
+      section_count_min: 4
+      section_paths_must_include:
+        - ["中华人民共和国民法典", "第一编 总则", "第一章 基本规定"]
+        - ["中华人民共和国民法典", "第一编 总则", "第二章 自然人"]
+        - ["中华人民共和国民法典", "第二编 物权", "第一分编 通则"]
+
+  - id: "003-tech-blog"
+    file: "003-tech-blog.md"
+    source: "tech blog post (虚构)"
+    pinned_version: "2026-04-27 v1"
+    license: "attune-internal sample"
+    expected:
+      title_contains: ["Microservices"]
+      min_text_chars: 1000
+      must_contain_phrases:
+        - "monolith"
+        - "Kubernetes"
+      section_count_min: 4
+      section_paths_must_include:
+        - ["Why I Stopped Using Microservices"]
+        - ["Why I Stopped Using Microservices", "The Microservice Hype"]
+        - ["Why I Stopped Using Microservices", "When Microservices Actually Make Sense"]
+
+  - id: "004-news-article"
+    file: "004-news-article.md"
+    source: "news article (虚构)"
+    pinned_version: "2026-04-27 v1"
+    license: "attune-internal sample"
+    expected:
+      title_contains: ["EU", "AI Act"]
+      min_text_chars: 600
+      must_contain_phrases:
+        - "European Parliament"
+        - "compliance"
+      section_count_min: 3
+      section_paths_must_include:
+        - ["EU Approves Landmark AI Act Regulation"]
+        - ["EU Approves Landmark AI Act Regulation", "Risk-Based Tiers"]
+
+  - id: "005-academic-paper"
+    file: "005-academic-paper.md"
+    source: "academic paper review (基于 Vaswani 2017 改写)"
+    pinned_version: "2026-04-27 v1"
+    license: "attune-internal sample"
+    expected:
+      title_contains: ["Attention Is All You Need"]
+      min_text_chars: 700
+      must_contain_phrases:
+        - "Transformer"
+        - "attention mechanism"
+      section_count_min: 4
+      section_paths_must_include:
+        - ["Attention Is All You Need: A Brief Review"]
+        - ["Attention Is All You Need: A Brief Review", "Abstract"]
+        - ["Attention Is All You Need: A Brief Review", "2 Background", "2.1 Self-Attention"]
+
+# CI 回归阈值
+regression:
+  min_pass_rate: 1.0   # 5 篇必须全过；扩 200 时降到 0.95

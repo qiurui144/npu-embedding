@@ -142,6 +142,27 @@
 
 每次变更后跑 `cargo run --bin quality-eval` 对比当前 precision 与基线，下降 > 5% 视为回归需要人工审查。
 
+### 3.4 K2 Parse Golden Set（W3 batch C, 2026-04-27）
+
+测的是 chunker / parser 链路的**结构正确性**（与 §3.3 检索质量正交）。
+
+**位置**：`rust/crates/attune-core/tests/fixtures/parse_corpus/`
+- `manifest.yaml` 描述每 fixture 的 expected: title_contains / min_text_chars / must_contain_phrases / section_count_min / section_paths_must_include
+- 5 篇 markdown fixture（baseline，扩 200 不改 harness）
+
+**Harness**：`rust/crates/attune-core/tests/parse_golden_set_regression.rs`
+
+**Regression gate**：`min_pass_rate=1.0`（baseline 5 篇必须全过）；扩 200 时降 0.95（per Readwise Reader 范例）。
+
+**运行**：
+```bash
+cargo test -p attune-core --test parse_golden_set_regression
+```
+
+任一 fixture fail → CI 红。新增 fixture 仅追加 `manifest.yaml` + `tests/fixtures/parse_corpus/<id>.md`，不改 harness。
+
+**来源参照**：[Readwise Reader engineering blog](https://blog.readwise.io/the-next-chapter-of-reader-public-beta/) — 200 页 parsing benchmark + CI 95% 阈值方法论。
+
 ### 3.4 安全测试
 
 | ID | 测试 | 预期 |

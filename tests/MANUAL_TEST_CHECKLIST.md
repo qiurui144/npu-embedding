@@ -51,6 +51,14 @@
 - [ ] chat API 响应 JSON 含 `confidence` + `secondary_retrieval_used` + `citations[].breadcrumb` + `citations[].chunk_offset_start/end` 字段（即使 breadcrumb=[] / offset=null）
 - [ ] **Known limitation 验证**：当前 `breadcrumb` 总为空 array、`offset` 总为 null（W3 batch 2 才透传）— 前端不应假设有值
 
+## W3 Batch C: K2 Parse Golden Set Baseline（2026-04-27）
+
+### K2 baseline 验收
+- [ ] `cargo test -p attune-core --test parse_golden_set_regression` 8 测试全绿
+- [ ] 任意改 `chunker::extract_sections_with_path` 后跑此测试 — fixture fail 应清晰报告 expectation 名称
+- [ ] 添加新 fixture：`tests/fixtures/parse_corpus/006-xxx.md` + manifest.yaml 加 entry → 测试自动覆盖（无需改 harness）
+- [ ] regression gate 验证：临时把 manifest 中 `min_pass_rate: 1.0` 改 `2.0`（不可能阈值）→ `k2_baseline_corpus_passes_min_rate` 应失败提示
+
 ## W3 Batch B: G1 + G2 + G5 + F3（2026-04-27）
 
 ### G1 浏览信号捕获 — 默认 opt-out 验证（核心隐私）
