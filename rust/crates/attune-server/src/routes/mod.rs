@@ -3,6 +3,7 @@ pub mod behavior;
 pub mod browse_signals;
 pub mod chat;
 pub mod chat_sessions;
+pub mod errors;
 pub mod feedback;
 pub mod classify;
 pub mod clusters;

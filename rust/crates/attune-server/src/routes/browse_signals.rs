@@ -52,12 +52,9 @@ pub async fn record_batch(
     }
 
     let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
-    let dek = vault.dek_db().map_err(|e| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-    })?;
+    let dek = vault
+        .dek_db()
+        .map_err(|_| crate::routes::errors::vault_locked())?;
 
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -113,22 +110,14 @@ pub async fn list(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let limit = q.limit.min(200);
     let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
-    let dek = vault.dek_db().map_err(|e| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-    })?;
+    let dek = vault
+        .dek_db()
+        .map_err(|_| crate::routes::errors::vault_locked())?;
     let count = vault.store().browse_signals_count().unwrap_or(0);
     let signals = vault
         .store()
         .list_recent_browse_signals(&dek, limit)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-        })?;
+        .map_err(|e| crate::routes::errors::internal("list_recent_browse_signals", e))?;
     Ok(Json(serde_json::json!({
         "count": count,
         "signals": signals,
@@ -141,12 +130,9 @@ pub async fn delete(
     Query(q): Query<DeleteQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = vault.dek_db().map_err(|e| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-    })?;
+    let _ = vault
+        .dek_db()
+        .map_err(|_| crate::routes::errors::vault_locked())?;
     let n = match q.domain.as_deref() {
         Some(d) if !d.is_empty() => vault
             .store()
