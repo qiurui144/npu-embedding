@@ -316,6 +316,10 @@ pub async fn chat(
             "content": r.content,
             "score": r.score,
             "source_type": r.source_type,
+            // v0.6 Phase B fix: 透传证据流字段到 chat citations
+            "breadcrumb": r.breadcrumb,
+            "chunk_offset_start": r.chunk_offset_start,
+            "chunk_offset_end": r.chunk_offset_end,
         })).collect()
     };
 
@@ -606,25 +610,47 @@ pub async fn chat(
         sid_opt
     };
 
-    // 6. Build citations
+    // 6. Build citations — v0.6 Phase B fix:
+    //    透传 breadcrumb + chunk_offset 让前端 reader 可点击跳转源 chunk
+    //    fallback：当 chunker 给 chunk[0] 空 path 时，用 [title] 给个最小面包屑
     let citations: Vec<serde_json::Value> = knowledge
         .iter()
         .map(|k| {
+            let title = k.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let breadcrumb_arr = k
+                .get("breadcrumb")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let breadcrumb = if breadcrumb_arr.is_empty() && !title.is_empty() {
+                vec![serde_json::Value::String(title.clone())]
+            } else {
+                breadcrumb_arr
+            };
             serde_json::json!({
                 "item_id": k.get("item_id"),
-                "title": k.get("title"),
+                "title": title,
                 "relevance": k.get("score"),
+                "breadcrumb": breadcrumb,
+                "chunk_offset_start": k.get("chunk_offset_start"),
+                "chunk_offset_end": k.get("chunk_offset_end"),
             })
         })
         .collect();
 
+    // v0.6 Phase B fix: 解析 confidence + 剥离 marker（J5 strict prompt 要求 LLM 末尾输出）
+    let confidence = attune_core::parse_confidence(&response);
+    let response = attune_core::strip_confidence_marker(&response).to_string();
+
     // 6. Build response with optional hint when web search unavailable
+    // v0.6 Phase B fix: 透传 confidence (parsed from LLM 末尾 marker)
     let mut response_json = serde_json::json!({
         "content": response,
         "citations": citations,
         "knowledge_count": knowledge.len(),
         "session_id": session_id,
         "web_search_used": web_search_used,
+        "confidence": confidence,
         // Batch B.2: 批注加权 / 上下文压缩统计 —— token chip 展开时展示
         "weight_stats": {
             "items_total": weight_stats.items_total,

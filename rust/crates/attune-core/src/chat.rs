@@ -215,16 +215,27 @@ impl ChatEngine {
         // 5. 剥离 confidence 标记后给用户
         let display_response = strip_confidence_marker(&final_response);
 
-        // 6. 提取引用 — F2 (W3 batch A) 已透传 SearchResult.breadcrumb / offset 真值
+        // 6. 提取引用 — F2 (W3 batch A) 已透传 SearchResult.breadcrumb / offset 真值。
         // per spec docs/superpowers/specs/2026-04-27-w3-batch-a-design.md §4
-        // 关闭了 W2 batch 1 的 placeholder 状态。老 vault / web 无 sidecar 时优雅降级为空。
-        let citations: Vec<Citation> = knowledge.iter().map(|k| Citation {
-            item_id: k.item_id.clone(),
-            title: k.title.clone(),
-            relevance: k.score,
-            chunk_offset_start: k.chunk_offset_start,
-            chunk_offset_end: k.chunk_offset_end,
-            breadcrumb: k.breadcrumb.clone(),
+        // 关闭了 W2 batch 1 的 placeholder 状态。
+        //
+        // v0.6 Phase B 加：当 chunker 给 first chunk path=[] 时（文档第一个 section
+        // 在第一个 heading 之前，常见于 "# Title\n\n正文..." 格式），fallback 到
+        // [title] 让前端 reader 至少能看到一个层级面包屑，不出 "无证据上下文" 的空状态。
+        let citations: Vec<Citation> = knowledge.iter().map(|k| {
+            let breadcrumb = if k.breadcrumb.is_empty() && !k.title.is_empty() {
+                vec![k.title.clone()]
+            } else {
+                k.breadcrumb.clone()
+            };
+            Citation {
+                item_id: k.item_id.clone(),
+                title: k.title.clone(),
+                relevance: k.score,
+                chunk_offset_start: k.chunk_offset_start,
+                chunk_offset_end: k.chunk_offset_end,
+                breadcrumb,
+            }
         }).collect();
 
         let knowledge_count = knowledge.len();
