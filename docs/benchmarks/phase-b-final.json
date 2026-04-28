@@ -4,7 +4,7 @@
       "name": "律师 / 中文法律",
       "n": 5,
       "hit_at_10": 0.8,
-      "mrr": 0.54,
+      "mrr": 0.5,
       "recall": 0.5
     },
     "B": {
@@ -12,14 +12,14 @@
       "n": 5,
       "hit_at_10": 1.0,
       "mrr": 1.0,
-      "recall": 0.8333333333333334
+      "recall": 0.7666666666666667
     },
     "C": {
-      "name": "中文技术读者",
+      "name": "中文技术读者 (cs-notes 八股)",
       "n": 5,
-      "hit_at_10": 0.0,
-      "mrr": 0.0,
-      "recall": 0.0
+      "hit_at_10": 1.0,
+      "mrr": 1.0,
+      "recall": 0.8
     }
   },
   "evidence_flow": {
@@ -41,12 +41,12 @@
       "has_breadcrumb": true,
       "has_offset": true
     },
-    "C/python_list_tuple": {
+    "C/java_hashmap": {
       "knowledge_count": 5,
       "citations_count": 5,
       "confidence": 3,
       "secondary_retrieval": false,
-      "has_inline_marker": false,
+      "has_inline_marker": true,
       "has_breadcrumb": true,
       "has_offset": true
     }

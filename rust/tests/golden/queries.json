@@ -84,41 +84,39 @@
     },
     {
       "id": "C",
-      "name": "中文技术读者",
-      "corpus": "tim168-subset",
-      "_note": "TIM168 里 ML 分类 4/5 是扫描 PDF 提不出文字；场景 C 受限于语料",
+      "name": "中文技术读者 (cs-notes 八股)",
+      "corpus": "cs-notes",
+      "_note": "v0.6 Phase B 修订：原 queries 针对 tim168 corpus (Python/AI)，但 attune-bench 索引的是 CyC2018/CS-Notes (Java/算法/计网/数据库)。重写 queries 让 acceptable_hits 与实际 cs-notes 文件标题对齐。",
       "queries": [
         {
-          "id": "python_list_tuple",
-          "query": "Python 中列表和元组有什么区别",
-          "acceptable_hits": ["Python3.6"],
+          "id": "java_hashmap",
+          "query": "Java HashMap 的实现原理 是怎么处理哈希冲突的",
+          "acceptable_hits": ["Java 容器"],
           "min_hit_in_top_k": 3
         },
         {
-          "id": "overfitting",
-          "query": "什么是过拟合 如何避免",
-          "acceptable_hits": ["机器学习算法与Python学习", "深度学习", "程序员的数学"],
-          "min_hit_in_top_k": 3,
-          "_known_limitation": "ML 抽取文本量只有 4.7KB，召回弱是预期"
-        },
-        {
-          "id": "python_decorator",
-          "query": "Python 的装饰器怎么用",
-          "acceptable_hits": ["Python3.6"],
+          "id": "tcp_handshake",
+          "query": "TCP 三次握手的过程是什么",
+          "acceptable_hits": ["计算机网络 - 传输层", "计算机网络"],
           "min_hit_in_top_k": 3
         },
         {
-          "id": "probability",
-          "query": "什么是概率和期望值",
-          "acceptable_hits": ["程序员的数学", "机器学习算法与Python学习"],
+          "id": "dp_algorithm",
+          "query": "动态规划的解题思路和步骤",
+          "acceptable_hits": ["Leetcode 题解 - 动态规划", "动态规划"],
           "min_hit_in_top_k": 3
         },
         {
-          "id": "gradient_descent",
-          "query": "梯度下降是什么原理",
-          "acceptable_hits": ["机器学习算法与Python学习", "深度学习", "程序员的数学"],
-          "min_hit_in_top_k": 3,
-          "_known_limitation": "同 overfitting"
+          "id": "binary_tree_traversal",
+          "query": "二叉树的前序中序后序遍历",
+          "acceptable_hits": ["Leetcode 题解 - 树", "树"],
+          "min_hit_in_top_k": 3
+        },
+        {
+          "id": "linux_process",
+          "query": "Linux 进程管理常用命令",
+          "acceptable_hits": ["Linux"],
+          "min_hit_in_top_k": 3
         }
       ]
     }

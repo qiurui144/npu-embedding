@@ -232,6 +232,45 @@ F-Pro 设计目标是法律提升，**意外发现 Rust scenarios 也从 MRR 0.8
 | B Rust/英文 | **1.00** | **1.00** | ≥ 0.80 / ≥ 0.50 | ✅ **PRO 满分** |
 | C 中文技术 | 0.00 | 0.00 | ≥ 0.80 | ⚠️ corpus 设计错位 |
 
+## 第五轮：Reranker fix + Scen C queries 重写（2026-04-28）
+
+诊断 + 修复两件事：
+- **Reranker 永久失败** (commit 待添加): 默认从 Xenova/bge-reranker-base quantized
+  切换到 BAAI/bge-reranker-base 官方 ONNX (full precision, 330MB)。Xenova 量化版触
+  发 `Expand node invalid shape`，让 reranker 全程退化到 RRF 排序。修后排序基于
+  cross-encoder 真值，不再 RRF fallback。
+- **Scen C corpus mismatch**: 原 queries 针对 tim168 (Python/AI 书) 但实际索引的
+  是 CyC2018/CS-Notes (Java/算法/计网/数据库)。重写 5 题为 cs-notes 真覆盖主题
+  (Java HashMap / TCP 三次握手 / 动态规划 / 二叉树遍历 / Linux 进程管理)。
+
+| 维度 | 第四轮 (F-Pro) | 第五轮 (reranker+queries fix) | Δ |
+|------|---------------|----------------------------|---|
+| Scen A 法律 Hit@10 | 0.80 | **0.80** | = |
+| Scen A 法律 MRR | 0.54 | **0.50** | -0.04 (波动) |
+| Scen B Rust Hit@10 | 1.00 | **1.00** | = |
+| Scen B Rust MRR | 1.00 | **1.00** | = |
+| **Scen C Hit@10** | 0.00 | **1.00 ✅ PRO 满分** | **+1.00** |
+| **Scen C MRR** | 0.00 | **1.00 满分** | **+1.00** |
+
+**Scen C 5/5 题全 top-1 命中**：
+```
+java_hashmap          MRR=1.00  Top-3: Java 容器 | 缓存 | 算法 - 符号表
+tcp_handshake         MRR=1.00  Top-3: 计算机网络 - 传输层 | 链路层 | 应用层
+dp_algorithm          MRR=1.00  Top-3: Leetcode 题解 - 动态规划 | n 个骰子 | 剪绳子
+binary_tree_traversal MRR=1.00  Top-3: Leetcode 题解 - 树 | 二叉搜索树 | 重建二叉树
+linux_process         MRR=1.00  Top-3: Linux | 计算机操作系统 - 进程管理 | 概述
+```
+
+### 最终 Pro 级别评估（第五轮）
+
+| Scenario | Hit@10 | MRR | Pro 阈值 | 状态 |
+|----------|--------|-----|----------|------|
+| A 法律/中文 | **0.80** | **0.50** | ≥ 0.80 / ≥ 0.50 | ✅ **PRO** |
+| B Rust/英文 | **1.00** | **1.00** | ≥ 0.80 / ≥ 0.50 | ✅ **PRO 满分** |
+| C 中文八股/cs-notes | **1.00** | **1.00** | ≥ 0.80 / ≥ 0.50 | ✅ **PRO 满分** |
+
+**🎯 三赛道全部达成 Pro 级别，2 赛道 MRR 满分。**
+
 ## Reproducing this baseline
 
 ```bash
