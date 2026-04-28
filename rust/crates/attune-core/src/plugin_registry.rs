@@ -20,7 +20,7 @@
 //! 商业插件包 (`.attunepkg`) 解压到 `~/.local/share/attune/plugins/<plugin_id>/`。
 
 use crate::error::{Result, VaultError};
-use crate::plugin_loader::LoadedPlugin;
+use crate::plugin_loader::{LoadedPlugin, PiiPatternSpec};
 use crate::workflow::{parse_workflow_yaml, Workflow};
 use std::collections::HashMap;
 use std::path::Path;
@@ -66,6 +66,30 @@ impl PluginRegistry {
     /// 按 plugin_type 过滤已加载 plugin
     pub fn plugins_by_type<'a>(&'a self, ptype: &'a str) -> impl Iterator<Item = &'a LoadedPlugin> + 'a {
         self.plugins.values().filter(move |p| p.manifest.plugin_type == ptype)
+    }
+
+    /// v0.6 新增：聚合所有 plugin 的 PII 正则（按 name 去重；同名仅保留第一个）。
+    ///
+    /// 调用方典型用法：
+    /// ```ignore
+    /// let mut redactor = attune_core::pii::Redactor::new();
+    /// for spec in registry.all_pii_patterns() {
+    ///     redactor.add_dict_entry_from_regex(&spec.name, &spec.regex)?;
+    /// }
+    /// ```
+    /// OSS 裸装 → plugins 空 → 返空 Vec → Redactor 仅有内置 12 类正则。
+    pub fn all_pii_patterns(&self) -> Vec<&PiiPatternSpec> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut out: Vec<&PiiPatternSpec> = Vec::new();
+        for p in self.plugins.values() {
+            for spec in &p.manifest.pii_patterns {
+                if seen.insert(spec.name.as_str()) {
+                    out.push(spec);
+                }
+            }
+        }
+        out
     }
 
     /// v0.6 新增：聚合所有 plugin 的 chat_trigger.project_keywords（去重后返回）
@@ -269,6 +293,54 @@ steps:
         assert_eq!(by_trigger.len(), 1);
         assert_eq!(by_trigger[0].plugin_id, "wf-plugin");
         assert_eq!(by_trigger[0].workflow.id, "wf-plugin/test");
+    }
+
+    #[test]
+    fn pii_patterns_aggregated_across_plugins_and_deduped_by_name() {
+        let tmp = TempDir::new().expect("tmp");
+        write_plugin_dir(
+            tmp.path(),
+            "law-pro",
+            r#"
+id: law-pro
+name: 律师插件
+type: industry
+version: "1.0.0"
+pii_patterns:
+  - name: case_no
+    regex: "\\(\\d{4}\\)[\\u4e00-\\u9fa5]+\\d+号"
+  - name: court_seal
+    regex: "[\\u4e00-\\u9fa5]+人民法院"
+"#,
+        );
+        write_plugin_dir(
+            tmp.path(),
+            "medical-pro",
+            r#"
+id: medical-pro
+name: 医生插件
+type: industry
+version: "1.0.0"
+pii_patterns:
+  - name: medical_record_no
+    regex: "MR\\d{8}"
+  - name: case_no
+    regex: "DUPLICATE_should_be_skipped"
+"#,
+        );
+
+        let (reg, errs) = PluginRegistry::scan(tmp.path()).expect("scan");
+        assert!(errs.is_empty());
+        assert_eq!(reg.plugins().count(), 2);
+
+        let patterns = reg.all_pii_patterns();
+        let names: std::collections::HashSet<&str> =
+            patterns.iter().map(|p| p.name.as_str()).collect();
+        // case_no 去重保留第一次出现的；court_seal + medical_record_no + case_no = 3 个
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("case_no"));
+        assert!(names.contains("court_seal"));
+        assert!(names.contains("medical_record_no"));
     }
 
     #[test]

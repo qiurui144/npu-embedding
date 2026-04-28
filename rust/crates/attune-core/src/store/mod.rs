@@ -15,6 +15,7 @@ mod web_search_cache;
 mod chunk_breadcrumbs;
 pub mod browse_signals;  // pub: BrowseSignalInput / BrowseSignalRow 给 attune-server route 用
 pub mod auto_bookmarks;  // W4 G2: high engagement auto bookmark candidates (G3 staging)
+pub mod audit;            // v0.6 Phase A.5.3: 出网审计日志
 
 pub use types::*;
 
@@ -38,16 +39,19 @@ CREATE TABLE IF NOT EXISTS vault_meta (
 );
 
 CREATE TABLE IF NOT EXISTS items (
-    id          TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    content     BLOB NOT NULL,
-    url         TEXT,
-    source_type TEXT NOT NULL DEFAULT 'note',
-    domain      TEXT,
-    tags        BLOB,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    is_deleted  INTEGER NOT NULL DEFAULT 0
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    content      BLOB NOT NULL,
+    url          TEXT,
+    source_type  TEXT NOT NULL DEFAULT 'note',
+    domain       TEXT,
+    tags         BLOB,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    is_deleted   INTEGER NOT NULL DEFAULT 0,
+    -- v0.6 Phase A.5.4 隐私分级（per 用户决策 2026-04-28）
+    -- L0 = 标记为🔒，永不出网（强制本地 LLM）；L1 = 默认（脱敏 → 云）；L3 = 高敏感（LLM 脱敏 → 云）
+    privacy_tier TEXT NOT NULL DEFAULT 'L1'
 );
 CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_deleted ON items(is_deleted);
@@ -325,6 +329,28 @@ CREATE TABLE IF NOT EXISTS auto_bookmarks (
 );
 CREATE INDEX IF NOT EXISTS idx_auto_bookmarks_pending ON auto_bookmarks(promoted, created_at_secs);
 CREATE INDEX IF NOT EXISTS idx_auto_bookmarks_domain ON auto_bookmarks(domain_hash, created_at_secs DESC);
+
+-- v0.6 Phase A.5.3 隐私审计日志（per 用户决策 2026-04-28）
+-- 全字段明文：合规员/用户必须可读 timestamp/provider/model/token/hash/redactions
+-- 不存原文 + 不存任何 PII（hash 是单向 SHA256[:16]）→ 即使审计 db 泄露也不暴露用户内容
+-- direction: 'request' (出网) / 'response' (LLM 答案，可选记录)
+-- privacy_tier: L0(全本地) / L1(脱敏→云) / L3(LLM脱敏→云)
+-- redactions_json: {"PHONE":2,"EMAIL":1,"CASE_NO":3} 表"这次脱敏命中了多少敏感字段"
+CREATE TABLE IF NOT EXISTS outbound_audit (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ms            INTEGER NOT NULL,
+    direction        TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    model            TEXT NOT NULL,
+    token_estimate   INTEGER NOT NULL DEFAULT 0,
+    privacy_tier     TEXT NOT NULL DEFAULT 'L1',
+    pre_redact_hash  TEXT NOT NULL,
+    post_redact_hash TEXT NOT NULL,
+    redactions_json  TEXT NOT NULL DEFAULT '{}',
+    session_id       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_audit_ts ON outbound_audit(ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_outbound_audit_session ON outbound_audit(session_id, ts_ms);
 "#;
 
 pub struct Store {
@@ -342,6 +368,7 @@ impl Store {
         conn.execute_batch(SCHEMA_SQL)?;
         Self::migrate_task_type(&conn)?;
         Self::migrate_breadcrumbs_encrypt(&conn)?;
+        Self::migrate_items_privacy_tier(&conn)?;
         Ok(Self { conn })
     }
 
@@ -352,7 +379,24 @@ impl Store {
         conn.execute_batch(SCHEMA_SQL)?;
         Self::migrate_task_type(&conn)?;
         Self::migrate_breadcrumbs_encrypt(&conn)?;
+        Self::migrate_items_privacy_tier(&conn)?;
         Ok(Self { conn })
+    }
+
+    /// 迁移：items 新增 privacy_tier 列（v0.6 Phase A.5.4，幂等）
+    fn migrate_items_privacy_tier(conn: &Connection) -> Result<()> {
+        let has_col: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'privacy_tier'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_col == 0 {
+            conn.execute(
+                "ALTER TABLE items ADD COLUMN privacy_tier TEXT NOT NULL DEFAULT 'L1'",
+                [],
+            )?;
+        }
+        Ok(())
     }
 
     /// 迁移: embed_queue 新增 task_type 列（幂等）

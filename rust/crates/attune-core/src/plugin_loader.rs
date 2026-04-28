@@ -77,6 +77,27 @@ pub struct PluginManifest {
     /// Sprint 2 Skills Router: chat 关键词路由（type=skill 时使用）
     #[serde(default)]
     pub chat_trigger: Option<ChatTrigger>,
+
+    /// v0.6 新增：vertical plugin 提供的行业 PII 正则。
+    /// 由 PluginRegistry::all_pii_patterns 聚合，注入 attune-server 的 Redactor。
+    /// 例：law-pro 提供 case_no、medical-pro 提供 medical_record_no、patent-pro 提供 patent_no。
+    #[serde(default)]
+    pub pii_patterns: Vec<PiiPatternSpec>,
+}
+
+/// vertical plugin 在 plugin.yaml 中声明的 PII 正则。
+///
+/// ```yaml
+/// pii_patterns:
+///   - name: case_no
+///     regex: "\\(\\d{4}\\)[\\u4e00-\\u9fa5]+\\d+号"
+/// ```
+///
+/// `name` 决定 placeholder 前缀（`[CASE_NO_1]`），全局唯一以避免不同 plugin 冲突。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PiiPatternSpec {
+    pub name: String,
+    pub regex: String,
 }
 
 /// chat_trigger 配置（参考 lawcontrol skill plugin.yaml）

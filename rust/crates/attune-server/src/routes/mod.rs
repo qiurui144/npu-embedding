@@ -1,5 +1,6 @@
 pub mod ai_stack;
 pub mod annotations;
+pub mod audit;
 pub mod auto_bookmarks;
 pub mod behavior;
 pub mod browse_signals;
@@ -15,6 +16,7 @@ pub mod items;
 pub mod llm;
 pub mod patent;
 pub mod plugins;
+pub mod privacy;
 pub mod profile;
 pub mod projects;
 pub mod remote;

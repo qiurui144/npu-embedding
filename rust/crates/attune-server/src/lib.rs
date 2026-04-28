@@ -78,6 +78,13 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/items/stale", get(routes::items::list_stale_items))
         .route("/api/v1/items/{id}", get(routes::items::get_item).delete(routes::items::delete_item).patch(routes::items::update_item))
         .route("/api/v1/items/{id}/stats", get(routes::items::get_item_stats))
+        // v0.6 Phase A.5.4 per-file 隐私分级
+        .route("/api/v1/items/protected", get(routes::items::list_protected_items))
+        .route(
+            "/api/v1/items/{id}/privacy_tier",
+            get(routes::items::get_item_privacy)
+                .patch(routes::items::set_item_privacy),
+        )
         .route("/api/v1/settings", get(routes::settings::get_settings).patch(routes::settings::update_settings))
         .route("/api/v1/search", get(routes::search::search))
         .route("/api/v1/search/relevant", post(routes::search::search_relevant))
@@ -135,6 +142,12 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/auto_bookmarks",
                get(routes::auto_bookmarks::list)
                    .delete(routes::auto_bookmarks::delete))
+        // v0.6 Phase A.5.3 隐私出网审计日志（GET 列表 + CSV 导出）
+        // 写入由 attune-core::Store::record_outbound 在 LLM provider hook 中触发，不暴露 POST
+        .route("/api/v1/audit/outbound", get(routes::audit::list))
+        .route("/api/v1/audit/outbound/export.csv", get(routes::audit::export_csv))
+        // v0.6 Phase A.5.5 隐私 tier 检测（Settings UI Privacy 页用）
+        .route("/api/v1/privacy/tier", get(routes::privacy::tier))
         // Status (full status requires vault access)
         .route("/api/v1/status", get(routes::status::status))
         // Index management

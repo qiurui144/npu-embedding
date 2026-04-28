@@ -23,6 +23,7 @@ pub mod llm;
 pub mod ocr;  // v0.6.0-rc.3: pub for ai_stack status API
 pub mod asr;
 pub mod parser;
+pub mod pii;
 pub mod platform;
 pub mod memory_consolidation;
 pub mod project_recommender;
