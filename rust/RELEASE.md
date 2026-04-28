@@ -1,5 +1,60 @@
 # attune 版本记录
 
+## v0.6.0-rc.5（2026-04-28）— 三赛道 PRO + 5 维度满分
+
+**关键交付**：检索 + 答案双 PRO 级，跨域污染防御、PII 脱敏、证据流端到端全部上线。
+
+### Benchmark 数字
+- Scen A 法律 (lawcontrol): Hit@10=**0.80**, MRR=0.50 ✅ PRO
+- Scen B Rust (rust-book): Hit@10=**1.00**, MRR=**1.00** ✅ PRO 满分
+- Scen C 中文八股 (cs-notes): Hit@10=**1.00**, MRR=**1.00** ✅ PRO 满分
+- Lawcontrol golden_qa 5 维度: **25.00/25** (10/10 excellent，vs baseline +39%)
+
+### Phase A.5 — PII 脱敏 + 隐私分级
+- `attune-core::pii` 新模块：12 类格式化 PII（含 ISO 7064 身份证 / Luhn 信用卡 / 8 家 API key）+ 用户自定义词典 + 可逆 placeholder
+- `attune-core::store::audit` + `routes::audit`：出网审计日志 + CSV 导出
+- `items.privacy_tier` 字段 + per-file 🔒 标记 (L0/L1/L3)
+- vertical plugin 在 `plugin.yaml::pii_patterns` 声明行业 PII（案号 / 病历号 / 专利号）
+
+### Phase B — 双赛道 benchmark
+- `scripts/parse-legal-dump.py`: lawcontrol PG dump → 10,677 .md 文件
+- `scripts/bench-orchestrator.sh`: 一站式 vault setup + bind + index + query
+- `scripts/run-final-eval.py`: 15 题 retrieval + 3 题 evidence flow 验证
+- `attune-pro/law-pro/run_golden_qa`: 10 case × 5 维度评分
+- `docs/benchmarks/dual-track-baseline.md`: 5 轮演化报告
+
+### F-Pro — 跨域污染防御 4 stage
+- Stage 1: `items.corpus_domain` + `bound_dirs.corpus_domain` 字段
+- Stage 2: chunk text 头部注入 `[领域: legal]` prefix
+- Stage 3: `CROSS_DOMAIN_PENALTY = 0.4`（query domain ≠ doc domain）
+- Stage 4: `detect_query_domain` 关键词 4 domain × 12-30 词（零 LLM 调用）
+- 效果：法律 0.60 → 0.80, Rust MRR 0.87 → 1.00
+
+### 证据流端到端
+- `chat.rs` route 4 处数据丢失 bug 修复（breadcrumb / chunk_offset / confidence）
+- citation breadcrumb fallback 到 [item.title]
+- `parse_confidence` + `strip_confidence_marker` 在 chat route 接入
+
+### Embedding / LLM env vars
+- `ATTUNE_EMBEDDING_BACKEND=ollama`：3.6× 提速 + F16 全精度
+- `ATTUNE_CHAT_MODEL=<name>`：覆盖自动探测
+- 默认 reranker 切 BAAI/bge-reranker-base 官方 ONNX（修 Xenova Expand bug）
+
+### Schema migrations（幂等，自动）
+- `chunk_breadcrumbs` 加密 + `embed_queue.task_type` + `items.privacy_tier/corpus_domain` + `bound_dirs.corpus_domain`
+
+### 测试 / 文档
+- attune-core lib: **537+ tests**
+- 双语 release notes: `docs/v0.6-release-notes.md` + `.zh.md`
+- 文档站章节: 见 wiki.your-company.com/attune
+
+### 已知限制（v0.7 解决）
+- L3 LLM 语义脱敏（trait scaffold 在 `pii::ner`）
+- Settings → Privacy 完整 UI（当前是只读+导出）
+- 122 routes 渐进迁移 `routes::errors` helper
+- Phase D VLM 28 golden cases
+- macOS
+
 ## 开发中
 
 ## W3 Batch C: K2 Parse Golden Set Baseline (2026-04-27)

@@ -1,10 +1,34 @@
 # Attune
 
-[English](README.md) · [中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md) · [Wiki](https://wiki.your-company.com/attune/) · [Pricing](https://wiki.your-company.com/plans/attune-pricing/)
 
 **Private AI Knowledge Companion** — Local-first, globally augmented, increasingly attuned to your expertise.
 
 Attune is a personal AI knowledge base designed for knowledge-intensive professionals (lawyers, patent agents, researchers, consultants). Your professional domain becomes clearer the more you use it; local knowledge answers first, and the system reaches out to the web only when needed. All data is encrypted on your own device — portable across machines, portable across jobs.
+
+## v0.6.0-rc.5 highlights (2026-04-28)
+
+🎯 **Three-track PRO benchmark** — verified end-to-end RAG quality on legal + general English + Chinese fundamentals:
+
+| Scenario | Hit@10 | MRR | Verdict |
+|----------|--------|-----|---------|
+| 法律 / lawcontrol corpus | **0.80** | 0.50 | ✅ PRO |
+| Rust / rust-book | **1.00** | **1.00** | ✅ PRO 满分 |
+| 中文八股 / cs-notes | **1.00** | **1.00** | ✅ PRO 满分 |
+| **5-dim answer quality (lawcontrol golden_qa)** | **25.00/25** (100%) | 10/10 excellent | ✅ +39% vs baseline |
+
+🔒 **Phase A.5 — Three-layer privacy model**:
+- **L0 🔒**: per-file flag, chunk never leaves device (forced local LLM)
+- **L1 default**: 12 PII classes (id-card with ISO 7064 / phone / email / 8 API key vendors / etc.) with reversible `[KIND_N]` placeholders + outbound audit log (CSV exportable for compliance)
+- **L3** (v0.7): LLM-based semantic redaction on Tier T3+/K3 hardware
+
+🌐 **F-Pro — Cross-domain pollution defense**:
+- `items.corpus_domain` metadata + `[领域: legal]` chunk prefix + cross-domain penalty (0.4) + keyword query intent detection (zero LLM call)
+- Logical domain isolation on shared vault — no more "反洗钱" pulling Java algorithm docs
+
+📋 **Evidence flow end-to-end**: chat citations now include real `breadcrumb` (chapter path), `chunk_offset_start/end` (Reader deep-link target), and `confidence` (1-5, parsed from LLM strict-prompt marker).
+
+Reproduce: `bash scripts/bench-orchestrator.sh all && python3 scripts/run-final-eval.py`. Full benchmark methodology in [`docs/benchmarks/dual-track-baseline.md`](docs/benchmarks/dual-track-baseline.md), release notes in [`docs/v0.6-release-notes.md`](docs/v0.6-release-notes.md).
 
 ---
 

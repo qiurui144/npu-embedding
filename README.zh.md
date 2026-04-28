@@ -1,8 +1,36 @@
 # Attune
 
-[English](README.md) · [中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md) · [Wiki](https://wiki.your-company.com/attune/) · [价格 & 计划](https://wiki.your-company.com/plans/attune-pricing/)
 
-个人 AI 知识库 + 记忆增强系统。
+个人 AI 知识库 + 记忆增强系统。**私有 AI 知识伙伴** — 本地优先、全网增强、越用越懂你的专业。
+
+## v0.6.0-rc.5 亮点（2026-04-28）
+
+🎯 **三赛道 PRO 级 benchmark** — 法律 + 通用英文 + 中文八股双赛道端到端验证：
+
+| 场景 | Hit@10 | MRR | 评级 |
+|------|--------|-----|------|
+| 法律 / lawcontrol corpus | **0.80** | 0.50 | ✅ PRO |
+| Rust / rust-book | **1.00** | **1.00** | ✅ PRO 满分 |
+| 中文八股 / cs-notes | **1.00** | **1.00** | ✅ PRO 满分 |
+| **答案 5 维度 (lawcontrol golden_qa)** | **25.00/25** (100%) | 10/10 excellent | ✅ vs baseline +39% |
+
+🔒 **Phase A.5 三层隐私模型**：
+- **L0 🔒**：文件级标记，chunk 永不出网（强制本地 LLM）
+- **L1 默认**：12 类格式化 PII（身份证 ISO 7064 / 手机 / 邮箱 / 8 家 API key 等）+ 可逆 `[KIND_N]` placeholder + 出网审计 + CSV 导出（合规审查可用）
+- **L3**（v0.7）：LLM 语义脱敏，Tier T3+/K3 硬件自动启用
+
+🌐 **F-Pro 跨域污染防御**：
+- `items.corpus_domain` 字段 + `[领域: legal]` chunk 前缀 + 跨域 penalty (0.4) + 关键词 query intent 检测（零 LLM 调用）
+- 共享 vault 也能"逻辑分域" — 中文法律 query 不再拉出 Java 算法内容
+
+📋 **证据流端到端**：chat citation 现在含真实 `breadcrumb`（章节路径）+ `chunk_offset_start/end`（Reader 跳转锚点）+ `confidence`（1-5，从 LLM 严格 prompt 解析）。
+
+复现命令：`bash scripts/bench-orchestrator.sh all && python3 scripts/run-final-eval.py`。完整 benchmark 方法论见 [`docs/benchmarks/dual-track-baseline.md`](docs/benchmarks/dual-track-baseline.md)，发布说明见 [`docs/v0.6-release-notes.zh.md`](docs/v0.6-release-notes.zh.md)。
+
+---
+
+## 双产品线
 
 本仓库包含两条并行的产品线：
 
