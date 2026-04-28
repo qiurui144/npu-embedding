@@ -7,7 +7,15 @@ pub const DEFAULT_CHUNK_SIZE: usize = 512;
 pub const DEFAULT_OVERLAP: usize = 128;
 pub const SECTION_TARGET_SIZE: usize = 1500;
 
-/// 滑动窗口分块（字符级，句子边界感知）
+/// 滑动窗口分块（字符级，句子边界感知 + Markdown code fence 边界保留）
+///
+/// 切割规则（优先级从高到低）：
+/// 1. **Code fence 平衡** — 不允许把 ``` 切到一半；如果 chunk 内 ``` 数量奇数，
+///    向前扩展到下一个 ``` 之后（让 code block 完整保留），实在找不到才退而求其次。
+/// 2. **句子边界** — 在 (end-50, end) 区间内回退到最近的句末符号 (。.!?\n！？)。
+/// 3. **硬切** — 都不满足时按 chunk_size 硬切。
+///
+/// 防御 #1 让代码片段在 RAG 时不被截断（per phase6 chunker fence fix，2026-04-28）。
 pub fn chunk(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     // overlap 必须 < chunk_size，否则滑动步长 <= 0 导致无限循环
     let overlap = overlap.min(chunk_size.saturating_sub(1));
@@ -16,15 +24,29 @@ pub fn chunk(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     }
     let mut chunks = Vec::new();
     let chars: Vec<char> = text.chars().collect();
+    // 给 code fence 扩展留 buffer：最多扩展到 2× chunk_size（避免某个超长 code block 让 chunk 失控）
+    let max_extend = chunk_size;
     let mut start = 0;
     while start < chars.len() {
+        // 0. 如果 start 落在已开启的 code block 内（前面有奇数个 ```），推后到下一个 ``` 之后
+        //    这避免 chunk 以孤立的闭合 fence 开头（产生 unbalanced chunk）
+        start = advance_start_past_open_fence(&chars, start);
+        if start >= chars.len() {
+            break;
+        }
+
         let end = (start + chunk_size).min(chars.len());
-        // 尝试在句子边界切割
-        let actual_end = if end < chars.len() {
+        // 1. 尝试在句子边界切割
+        let sentence_end = if end < chars.len() {
             find_sentence_boundary(&chars, start, end).unwrap_or(end)
         } else {
             end
         };
+        // 2. 检查 code fence 平衡，不平衡则调整（保证严格 > start，避免 0 进度死循环）
+        let mut actual_end = adjust_for_code_fence(&chars, start, sentence_end, max_extend);
+        if actual_end <= start {
+            actual_end = sentence_end.max(start + 1);
+        }
         let chunk_text: String = chars[start..actual_end].iter().collect();
         if !chunk_text.trim().is_empty() {
             chunks.push(chunk_text);
@@ -32,12 +54,122 @@ pub fn chunk(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
         if actual_end >= chars.len() {
             break;
         }
-        start = actual_end.saturating_sub(overlap);
+        // 严格前进：next_start 必须 > 当前 start，避免无限循环
+        let next_start = actual_end.saturating_sub(overlap).max(start + 1);
+        start = next_start;
         if start == 0 && !chunks.is_empty() {
-            break; // 防止无限循环
+            break; // 兜底（不应发生）
         }
     }
     chunks
+}
+
+/// 如果 start 位置之前有奇数个 ```（说明 start 落在已开启的 code block 内部），
+/// 把 start 推后到下一个 ``` 之后，避免 chunk 以孤立闭合 fence 开头。
+fn advance_start_past_open_fence(chars: &[char], start: usize) -> usize {
+    if start == 0 || start >= chars.len() {
+        return start;
+    }
+    // 数 chars[0..start] 中 ``` 出现次数
+    let mut count = 0;
+    let mut i = 0;
+    while i + 3 <= start {
+        if chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            count += 1;
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    if count % 2 == 0 {
+        return start; // start 在 code block 外部，OK
+    }
+    // start 在 code block 内 — 推到下一个 ``` 之后
+    let mut j = start;
+    while j + 3 <= chars.len() {
+        if chars[j] == '`' && chars[j + 1] == '`' && chars[j + 2] == '`' {
+            // 跳到 fence 后行末，避免 ``` 后接 language tag 被切
+            let mut after = j + 3;
+            while after < chars.len() && chars[after] != '\n' {
+                after += 1;
+            }
+            if after < chars.len() {
+                after += 1;
+            }
+            return after;
+        }
+        j += 1;
+    }
+    // 找不到闭合 fence — 返回原 start (退化情况)
+    start
+}
+
+/// 检查 chars[start..end] 中 ``` 数量是否奇数（即切到 code block 中间）。
+/// 如果是，调整 end 让 fence 平衡：
+///   - 优先扩展到下一个 ```  之后（让本 chunk 包含完整 code block）
+///   - 都找不到 → 回退到 chunk 内最近的 ``` 之前（让 code block 完全在下个 chunk）
+///   - 退化情况 → 返回原 end
+fn adjust_for_code_fence(chars: &[char], start: usize, end: usize, max_extend: usize) -> usize {
+    if !has_unbalanced_fence(chars, start, end) {
+        return end;
+    }
+    // 向前扩展找下一个 ```（必须是 3 个连续 backtick）
+    let extend_limit = (end + max_extend).min(chars.len());
+    let mut i = end;
+    while i + 3 <= extend_limit {
+        if chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            // 找到闭合 fence，包含它（含 fence 后到行末，让 chunk 自然结束）
+            let mut after = i + 3;
+            // 顺到行末，避免 ``` 在行中部把语言标签也切了
+            while after < extend_limit && chars[after] != '\n' {
+                after += 1;
+            }
+            // 含上 \n
+            if after < extend_limit {
+                after += 1;
+            }
+            return after.min(chars.len());
+        }
+        i += 1;
+    }
+    // 没找到闭合 fence — 回退到 chunk 内最近一个 ``` 之前
+    let mut last_fence: Option<usize> = None;
+    let mut j = start;
+    while j + 3 <= end {
+        if chars[j] == '`' && chars[j + 1] == '`' && chars[j + 2] == '`' {
+            last_fence = Some(j);
+            j += 3;
+        } else {
+            j += 1;
+        }
+    }
+    if let Some(f) = last_fence {
+        // 回退到该 ``` 之前（向前找 \n 让 chunk 在 code block 开始前自然结束）
+        let mut k = f;
+        while k > start && chars[k - 1] != '\n' {
+            k -= 1;
+        }
+        if k > start {
+            return k;
+        }
+    }
+    // 找不到合理边界（罕见）— 保持原 end
+    end
+}
+
+/// 数 chars[start..end] 中 ``` 出现的次数，奇数返回 true。
+fn has_unbalanced_fence(chars: &[char], start: usize, end: usize) -> bool {
+    let mut count = 0;
+    let mut i = start;
+    while i + 3 <= end {
+        if chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            count += 1;
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    count % 2 != 0
 }
 
 /// 语义章节切割: Markdown 标题 / 代码 def|class / 段落大小
@@ -256,6 +388,55 @@ mod tests {
         for c in &chunks {
             assert!(!c.is_empty());
         }
+    }
+
+    // ── Code fence preservation tests (phase 6 chunker fix, 2026-04-28) ──
+
+    #[test]
+    fn chunk_preserves_code_fence_balanced_in_each_chunk() {
+        // markdown 含一个会被 chunk 切到中间的 code block
+        let prose = "前置说明。".repeat(80); // ~480 chars 中文
+        let code = "\n```rust\nfn main() {\n    let x = 1;\n    let y = 2;\n    let z = 3;\n}\n```\n";
+        let after = "\n后续段落。".repeat(80);
+        let text = format!("{prose}{code}{after}");
+        let chunks = chunk(&text, 500, 100);
+        for (i, c) in chunks.iter().enumerate() {
+            let fc = c.matches("```").count();
+            assert_eq!(
+                fc % 2,
+                0,
+                "chunk {i} 含奇数个 fence ({fc}), 内容:\n----\n{c}\n----"
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_with_only_code_block_no_panic() {
+        let text = "```python\nprint('hi')\nprint('there')\n```\n".repeat(20);
+        let chunks = chunk(&text, 200, 50);
+        assert!(!chunks.is_empty());
+        for c in &chunks {
+            let fc = c.matches("```").count();
+            assert_eq!(fc % 2, 0, "code-only doc 仍应保持 balanced");
+        }
+    }
+
+    #[test]
+    fn chunk_does_not_loop_on_extreme_input() {
+        // 超长不可拆分的 code block — 算法不应死循环或栈溢出
+        let big_code = "```rust\n".to_string() + &"x".repeat(5000) + "\n```\n";
+        let chunks = chunk(&big_code, 500, 100);
+        // 至少产生 1 个 chunk（可能一个超大 chunk 装下整个 code block）
+        assert!(!chunks.is_empty());
+        // 不要求 balanced（fence 退化时算法会保留原 end）
+    }
+
+    #[test]
+    fn has_unbalanced_fence_detects_odd_fences() {
+        let text: Vec<char> = "before ``` code".chars().collect();
+        assert!(has_unbalanced_fence(&text, 0, text.len()));
+        let balanced: Vec<char> = "before ```code``` after".chars().collect();
+        assert!(!has_unbalanced_fence(&balanced, 0, balanced.len()));
     }
 
     // ── J1 tests（per spec §J1）──────────────────────────────────────

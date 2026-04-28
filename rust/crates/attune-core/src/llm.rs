@@ -118,21 +118,25 @@ pub struct OllamaLlmProvider {
 
 /// 按优先级排列的默认 chat 模型候选。
 /// 用户可用 `ATTUNE_CHAT_MODEL` env var 覆盖。
+/// 顺序原则: 小→中→大。Ollama 加载大模型 (≥14B) 第一次推理慢 (>30s)，
+/// 长上下文 chunk summary 串行调用容易 timeout。优先选小模型让基础链路稳定。
 const PREFERRED_MODELS: &[&str] = &[
+    // 小模型（≤4B，首选，<10s 响应）
     "qwen2.5:7b",
     "qwen2.5:3b",
     "qwen2.5:1.5b",
-    // v0.6: 加 qwen3 / deepseek-r1 / qwen3.5 系列（业界主流推理模型）
-    "qwen3:8b",
     "qwen3:4b",
     "qwen3:1.7b",
-    "qwen3.5:35b-a3b-q3_k_m",  // MoE 30B 总参数 / 3B 激活，旗舰用户
-    "deepseek-r1:32b",
-    "deepseek-r1:14b",
     "deepseek-r1:8b",
     "llama3.2:3b",
     "llama3.2:1b",
     "phi3:mini",
+    // 中等模型（8-14B，~30s 响应）
+    "qwen3:8b",
+    "deepseek-r1:14b",
+    // 大模型（≥30B，慢但能力最强；放最后）
+    "qwen3.5:35b-a3b-q3_k_m",  // MoE 30B 总参 / 3B 激活
+    "deepseek-r1:32b",
 ];
 
 impl OllamaLlmProvider {

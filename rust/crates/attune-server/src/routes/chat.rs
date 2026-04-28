@@ -421,6 +421,10 @@ pub async fn chat(
                     };
 
                     // Phase 2（无锁）：对真正 miss 调 LLM
+                    // Fast-fail: 第 1 个 chunk LLM 调用失败后跳过剩余（避免 5 chunk × 120s timeout 串行
+                    // 把 client 卡到 180s 断开）。第 1 个失败通常表示 Ollama / LLM provider 不健康，
+                    // 重试也是浪费。所有 miss chunk 改用原文降级。
+                    let mut llm_unavailable = false;
                     for s in slots.iter_mut() {
                         if s.is_short || s.was_cache_hit || s.item_id.is_empty() {
                             continue;
@@ -428,6 +432,10 @@ pub async fn chat(
                         let Some(ref llm) = llm_arc else {
                             continue; // LLM 不可用 → 降级原文（summary 保持 None）
                         };
+                        if llm_unavailable {
+                            // 已经 fast-fail，不再调 LLM
+                            continue;
+                        }
                         match attune_core::context_compress::generate_summary(llm.as_ref(), &s.text, strategy) {
                             Ok(summary) => {
                                 s.summary = Some(summary);
@@ -435,6 +443,17 @@ pub async fn chat(
                             }
                             Err(e) => {
                                 tracing::warn!("chat: summary generation failed for chunk {}: {e}", &s.hash[..8]);
+                                // LLM unavailable 错误 → fast-fail 整批
+                                let err_msg = e.to_string();
+                                if err_msg.contains("llm unavailable")
+                                    || err_msg.contains("error sending request")
+                                    || err_msg.contains("timed out")
+                                {
+                                    tracing::warn!(
+                                        "chat: LLM unavailable, skipping summary for remaining chunks (graceful fallback to original text)"
+                                    );
+                                    llm_unavailable = true;
+                                }
                             }
                         }
                     }

@@ -82,14 +82,30 @@ fn pause_all_stops_workers_within_one_second() {
     }
     let _ = pause_at; // 已经验证 pause 生效
 
-    // resume 后能恢复处理
+    // resume 后能恢复处理 — 用 polling retry 替代 fixed sleep，避免重负载机器 flake。
+    // 在 CI / 本地 cargo 满载机器上，单次 200ms 不够 worker 醒来处理一次任务；
+    // 改为最多 wait 2s，每 50ms 采样一次，全部 worker 都开始增长后即通过。
     registry.resume_all();
-    thread::sleep(Duration::from_millis(200));
-    let after_resume: Vec<usize> = [&c1, &c2, &c3].iter().map(|c| c.load(Ordering::SeqCst)).collect();
+    let resume_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut after_resume = vec![0usize; 3];
+    let counters = [&c1, &c2, &c3];
+    loop {
+        for i in 0..3 {
+            after_resume[i] = counters[i].load(Ordering::SeqCst);
+        }
+        let all_resumed = (0..3).all(|i| after_resume[i] > after_settle[i]);
+        if all_resumed {
+            break;
+        }
+        if std::time::Instant::now() >= resume_deadline {
+            break; // 让 assert 给出失败信息
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
     for i in 0..3 {
         assert!(
             after_resume[i] > after_settle[i],
-            "worker {i} did not resume: settle={} resume={}",
+            "worker {i} did not resume within 2s: settle={} resume={}",
             after_settle[i], after_resume[i]
         );
     }
