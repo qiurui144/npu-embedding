@@ -133,18 +133,14 @@ esac
 
 case "$TARGET" in
     general|all)
-        # 第二章 / 第三章 是 ownership / references 章节，5 题律师 + 5 题 rust 涉及这些
-        # 全 src 量太大（112 文件 → ~5K chunks），先聚焦最相关章节
+        # 全量 rust-book src/ 112 chapters (worker bug 修后可完整 ingest)
         if [[ -e "$BENCH_HOME/general/rust-book/src" ]]; then
-            mkdir -p "$BENCH_HOME/general/rust-book-subset"
-            cp -f "$BENCH_HOME/general/rust-book/src/"ch04*.md \
-                  "$BENCH_HOME/general/rust-book/src/"ch15*.md \
-                  "$BENCH_HOME/general/rust-book/src/"ch17*.md \
-                  "$BENCH_HOME/general/rust-book/src/"ch18*.md \
-                  "$BENCH_HOME/general/rust-book-subset/" 2>/dev/null || true
-            bind_corpus "$BENCH_HOME/general/rust-book-subset" "rust-book-subset"
+            bind_corpus "$BENCH_HOME/general/rust-book/src" "rust-book-full"
         fi
-        # cs-notes notes 平面结构 175 md → 第一轮跳过；下一轮再加
+        # 全量 cs-notes notes/ 175 md (中文计算机基础八股)
+        if [[ -e "$BENCH_HOME/general/cs-notes/notes" ]]; then
+            bind_corpus "$BENCH_HOME/general/cs-notes/notes" "cs-notes-full"
+        fi
         ;;
 esac
 
@@ -251,9 +247,9 @@ log "Server log: /tmp/attune-bench-server.log"
 echo -n "$TOKEN" > /tmp/attune-bench-token
 log "Token persisted: /tmp/attune-bench-token (for downstream golden_qa)"
 
-# 默认在结尾 cleanup（杀 server）；如要保留 server 跑后续 5 维度评分，
-# 用 BENCH_KEEP_SERVER=1 bash bench-orchestrator.sh
-if [[ "${BENCH_KEEP_SERVER:-0}" == "1" ]]; then
+# 默认在结尾保留 server（方便手动验 chat / citation）。
+# BENCH_AUTOSHUTDOWN=1 bash bench-orchestrator.sh 会跑完后自动 kill server。
+if [[ "${BENCH_AUTOSHUTDOWN:-0}" != "1" ]]; then
     log "BENCH_KEEP_SERVER=1 → 保留 server pid=$SERVER_PID, 端口 $PORT"
     log "  下一步: ATTUNE_URL=$BASE_URL ATTUNE_TOKEN=\$(cat /tmp/attune-bench-token) \\"
     log "         cargo run --release -p law-pro --bin run_golden_qa --manifest-path /data/company/project/attune-pro/Cargo.toml"

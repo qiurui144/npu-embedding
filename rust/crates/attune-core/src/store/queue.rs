@@ -32,11 +32,19 @@ impl Store {
 
     /// 从队列中取出一批 pending 任务，标记为 processing
     /// SELECT + UPDATE 在同一事务中执行，防止并发 worker 重复拾取同一任务。
+    ///
+    /// v0.6 fix (Phase B benchmark)：按 `task_type='embed'` 过滤。embed_queue 共享
+    /// embed + classify 两类任务（classify worker 在 server 层独立运行）。
+    /// 当 classifier 未加载（默认情况下 dev / bench / 无 LLM 配置），classify 任务
+    /// 会被 embed worker dequeue + 进 partition 的 other 分支 + mark_task_pending 重置
+    /// → 反复 cycling 永远不结束，最终 embed_queue tail 卡 ~30 个 classify 任务。
+    /// 加 task_type 过滤后 embed worker 只看自己的任务，classify 任务静默 pending
+    /// 等 classifier 上线（无 worker 时不阻塞 embed 流水线）。
     pub fn dequeue_embeddings(&self, batch_size: usize) -> Result<Vec<QueueTask>> {
         let tx = self.conn.unchecked_transaction()?;
         let mut stmt = tx.prepare(
             "SELECT id, item_id, chunk_idx, chunk_text, level, section_idx, priority, attempts, task_type
-             FROM embed_queue WHERE status = 'pending'
+             FROM embed_queue WHERE status = 'pending' AND task_type = 'embed'
              ORDER BY priority ASC, created_at ASC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![batch_size as i64], |row| {
@@ -138,5 +146,16 @@ impl Store {
             params![id],
         )?;
         Ok(())
+    }
+
+    /// v0.6 fix (Phase B benchmark)：启动时复位 stuck 在 processing 的任务回 pending。
+    /// 上次进程崩溃 / kill 时 dequeue 已 mark processing 但还没 mark_done，
+    /// 不复位则永远停在 processing。返回复位的任务数。
+    pub fn reset_stuck_processing(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "UPDATE embed_queue SET status = 'pending' WHERE status = 'processing'",
+            [],
+        )?;
+        Ok(n)
     }
 }

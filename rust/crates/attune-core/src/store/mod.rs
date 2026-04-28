@@ -368,6 +368,11 @@ impl Store {
         conn.execute_batch(SCHEMA_SQL)?;
         Self::migrate_task_type(&conn)?;
         Self::migrate_breadcrumbs_encrypt(&conn)?;
+        // v0.6 fix: 复位 stuck 在 processing 的任务回 pending（上次进程崩溃 / kill）
+        let _ = conn.execute(
+            "UPDATE embed_queue SET status = 'pending' WHERE status = 'processing'",
+            [],
+        );
         Self::migrate_items_privacy_tier(&conn)?;
         Ok(Self { conn })
     }
