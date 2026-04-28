@@ -103,7 +103,51 @@ Per-dimension:
   on_topic     : ?.??/5
 ```
 
-## 第二轮：bge-m3 Ollama F16 vs ORT 量化版（2026-04-28）
+## 第三轮：全量 corpus + worker fix + 证据流端到端（2026-04-28）
+
+执行 ②③ 后再跑：
+- ② Worker bug 修（commit `89d1645`）+ 全量 corpus ingest（66 法规 + 51 案例 主题精选）
+- ③ Rust 全 src/ 112 chapters + cs-notes 175 中文技术
+- 证据流 4 处修复（commit `613dd0d`）
+
+| 维度 | 第一轮 (subset) | 第三轮 (full+fixes) |
+|------|----------------|--------------------|
+| Scen A 法律 Hit@10 | 0.80 (subset 仅) | **0.60** ⚠️ (全量 + cs-notes 污染) |
+| Scen A 法律 MRR | 0.67 | **0.50** (-0.17) |
+| **Scen A 命中题 top-rank** | top-1.5 平均 | **top-1.3 平均** ✓ 改善 |
+| Scen B Rust Hit@10 | 0.60 (subset 缺章) | **1.00 ✅ PRO** |
+| Scen B Rust MRR | 0.37 | **0.87 ✅ PRO** (+0.50) |
+| Scen C 中文技术 Hit@10 | N/A | 0.00 ⚠️ (cs-notes title 错位) |
+| **Citation breadcrumb** | 全 [] | ✅ **真值** ([章节路径]) |
+| **Citation chunk_offset** | None | ✅ **真值** ([0, 957]) |
+| **Citation confidence** | 0 (丢) | ✅ **3-5** (parse 成功) |
+
+**法律命中题 top-rank 详细**：
+- labor_notice: MRR=1.00 top-1 → "最高人民法院关于解除劳动合同的劳动争议仲裁申请期限"
+- loan_rate: MRR=1.00 top-1 → "最高人民法院关于新民间借贷司法解释适用范围"
+- trademark: MRR=0.50 top-2 → "陕西省检察院 8 起知识产权保护典型案例"
+
+**剩余 2 题 miss 原因**：
+- shareholder_resolution: corpus 含 公司法.md 但**缺具体讨论股东会决议程序的判决书**
+- breach_of_contract: 民法典.md 在但**top-3 全被 cs-notes "分布式/数据库系统原理" 顶占** — 经典跨域污染
+
+**证据流验证（chat citation 完整性）**：
+```
+Scen A labor_notice citation:
+  [1] title: "中华全国总工会..." rel=0.10
+      breadcrumb: ["中华全国总工会、...典型案例之九：县人社局..."]  ← 真路径
+      offset: [0, 275]                                            ← 可跳转
+  [2] title: "...典型案例" rel=0.10
+      breadcrumb: ["...典型案例之五：张某某与..."]
+      offset: [0, 287]
+  [3] title: "最高人民法院..." rel=0.05
+      breadcrumb: ["最高人民法院关于解除劳动合同的劳动争议仲裁申请期限..."]
+      offset: [0, 99]
+  confidence: 3/5
+  inline_marker: True (LLM 答案含 [1][2] 引用号)
+```
+
+
 
 切换 `ATTUNE_EMBEDDING_BACKEND=ollama` 后，**同一 corpus 同一 query** A/B 对比：
 

@@ -21,11 +21,23 @@ BASE = "http://localhost:18901"
 
 
 def get_token():
-    log = Path("/tmp/bench-run8.log").read_text()
-    m = re.search(r'token":"([^"]+)"', log)
-    if not m:
-        raise RuntimeError("token not found in /tmp/bench-run8.log")
-    return m.group(1)
+    """Auto-unlock vault with bench password to get fresh token. 不再依赖日志文件。"""
+    import os
+    if "ATTUNE_BENCH_TOKEN" in os.environ:
+        return os.environ["ATTUNE_BENCH_TOKEN"]
+    body = json.dumps({"password": "bench-2026"}).encode()
+    req = urllib.request.Request(
+        f"{BASE}/api/v1/vault/unlock",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        d = json.loads(r.read())
+    t = d.get("token", "")
+    if not t:
+        raise RuntimeError("vault unlock returned no token")
+    return t
 
 
 def search(q, token, k=10):
