@@ -68,3 +68,6 @@ tests/reports/
 
 # 临时调试目录 (CLAUDE.md 约定)
 tmp/
+
+# Claude Code 工具产物
+.claude/
