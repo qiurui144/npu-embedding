@@ -1,6 +1,8 @@
 # Attune
 
-[English](README.md) · [中文](README.zh.md) · [Wiki](https://wiki.your-company.com/attune/) · [Pricing](https://wiki.your-company.com/plans/attune-pricing/)
+[中文](README.zh.md) · [English](README.md) · [Wiki](https://wiki.your-company.com/attune/) · [Pricing](https://wiki.your-company.com/plans/attune-pricing/)
+
+> 🇨🇳 **中文用户请优先阅读** [README.zh.md](README.zh.md) — 项目文档以中文为主，本英文版为辅。
 
 **Private AI Knowledge Companion** — Local-first, globally augmented, increasingly attuned to your expertise.
 

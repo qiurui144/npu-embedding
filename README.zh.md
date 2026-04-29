@@ -1,6 +1,8 @@
 # Attune
 
-[English](README.md) · [中文](README.zh.md) · [Wiki](https://wiki.your-company.com/attune/) · [价格 & 计划](https://wiki.your-company.com/plans/attune-pricing/)
+[中文](README.zh.md) · [English](README.md) · [Wiki](https://wiki.your-company.com/attune/) · [价格 & 计划](https://wiki.your-company.com/plans/attune-pricing/)
+
+> 📌 **本仓文档以中文为主，英文为辅**。中文版（本文）持续更新；英文版 [README.md](README.md) 作为面向国际开源社区的精简对照。
 
 个人 AI 知识库 + 记忆增强系统。**私有 AI 知识伙伴** — 本地优先、全网增强、越用越懂你的专业。
 
