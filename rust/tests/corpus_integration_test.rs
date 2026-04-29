@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 
 /// Returns the absolute path to a corpus dir, or None if not downloaded.
 fn corpus_path(name: &str) -> Option<PathBuf> {
+    // CARGO_MANIFEST_DIR for tests in rust/tests/ = rust workspace root.
+    // corpora 在 rust/tests/corpora/<name>。
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()?  // rust/ (parent of attune-core/)
         .join("tests/corpora")
         .join(name);
     if p.exists() && p.is_dir() {

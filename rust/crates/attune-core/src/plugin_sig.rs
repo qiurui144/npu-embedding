@@ -78,7 +78,7 @@ pub fn verify_loose(plugin_dir: &Path) -> Result<VerifyResult> {
     }
 
     let sig_b64 = std::fs::read_to_string(&sig_path)
-        .map_err(|e| VaultError::Io(e))?;
+        .map_err(VaultError::Io)?;
     let sig_b64 = sig_b64.trim();
 
     let sig_bytes = base64::engine::general_purpose::STANDARD
@@ -135,13 +135,13 @@ pub fn verify_strict(plugin_dir: &Path) -> Result<()> {
 pub fn compute_plugin_digest(plugin_dir: &Path) -> Result<Vec<u8>> {
     let mut hasher = Sha256::new();
     let yaml = std::fs::read(plugin_dir.join("plugin.yaml"))
-        .map_err(|e| VaultError::Io(e))?;
+        .map_err(VaultError::Io)?;
     hasher.update(&yaml);
     hasher.update(b"\0");  // 分隔符
     let prompt_path = plugin_dir.join("prompt.md");
     if prompt_path.exists() {
         let prompt = std::fs::read(&prompt_path)
-            .map_err(|e| VaultError::Io(e))?;
+            .map_err(VaultError::Io)?;
         hasher.update(&prompt);
     }
     Ok(hasher.finalize().to_vec())

@@ -127,14 +127,44 @@ fn process_single_file(store: &Store, dek: &Key32, dir_id: &str, path: &Path) ->
     // 插入知识条目
     let item_id = store.insert_item(dek, &title, &content, None, "file", None, None)?;
 
+    // v0.6 Phase B F-Pro：从 bind_dir 读 corpus_domain 并赋给 item，driving cross-domain penalty。
+    // 失败 fallback 'general'（默认行为，不破坏现有数据）。
+    let corpus_domain = store.get_dir_corpus_domain(dir_id).unwrap_or_else(|_| "general".into());
+    if corpus_domain != "general" {
+        if let Err(e) = store.set_item_corpus_domain(&item_id, &corpus_domain) {
+            log::warn!("F-Pro set_item_corpus_domain failed for {item_id}: {e}");
+        }
+    }
+
+    // F2 (W3 batch A, 2026-04-27)：写 chunk_breadcrumbs sidecar 让 Citation 透传 path。
+    // per reviewer I4：scanner / webdav 路径同步覆盖，避免文件夹监听 / WebDAV 来源
+    // 的 item 永远 placeholder。
+    if let Err(e) = store.upsert_chunk_breadcrumbs_from_content(dek, &item_id, &content) {
+        log::warn!("F2 upsert_chunk_breadcrumbs failed for item {item_id}: {e}");
+    }
+
     // 提取章节 + 分块，加入 embedding 队列
     let sections = chunker::extract_sections(&content);
     let mut chunk_counter = 0;
 
+    // v0.6 Phase B F-Pro Stage 2：domain prefix 注入到 chunk_text 让 embedding 把同领域文档拉近。
+    // bge-m3 对前缀敏感（业界 corpus tagging 通行技巧），同领域文档在向量空间自然聚集，
+    // 跨领域距离自然变远 → 跨域污染症状大幅缓解。仅 corpus_domain != general 时注入
+    // （general 文档不需要 tag，避免污染老 vault 数据）。
+    let prefix = if corpus_domain != "general" {
+        format!("[领域: {}] ", corpus_domain)
+    } else {
+        String::new()
+    };
+    let with_prefix = |s: &str| -> String {
+        if prefix.is_empty() { s.to_string() } else { format!("{}{}", prefix, s) }
+    };
+
     // Level 1: 章节
     for (section_idx, section_text) in &sections {
         if !section_text.trim().is_empty() {
-            store.enqueue_embedding(&item_id, chunk_counter, section_text, 1, 1, *section_idx)?;
+            let tagged = with_prefix(section_text);
+            store.enqueue_embedding(&item_id, chunk_counter, &tagged, 1, 1, *section_idx)?;
             chunk_counter += 1;
         }
     }
@@ -143,7 +173,8 @@ fn process_single_file(store: &Store, dek: &Key32, dir_id: &str, path: &Path) ->
     for (section_idx, section_text) in &sections {
         let chunks = chunker::chunk(section_text, chunker::DEFAULT_CHUNK_SIZE, chunker::DEFAULT_OVERLAP);
         for chunk_text in &chunks {
-            store.enqueue_embedding(&item_id, chunk_counter, chunk_text, 2, 2, *section_idx)?;
+            let tagged = with_prefix(chunk_text);
+            store.enqueue_embedding(&item_id, chunk_counter, &tagged, 2, 2, *section_idx)?;
             chunk_counter += 1;
         }
     }
@@ -170,7 +201,7 @@ pub fn create_watcher() -> Result<(RecommendedWatcher, mpsc::Receiver<notify::Re
         },
         notify::Config::default().with_poll_interval(Duration::from_secs(2)),
     )
-    .map_err(|e| VaultError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
     Ok((watcher, rx))
 }
 
@@ -183,7 +214,7 @@ pub fn watch_directory(watcher: &mut RecommendedWatcher, path: &Path, recursive:
     };
     watcher
         .watch(path, mode)
-        .map_err(|e| VaultError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
     Ok(())
 }
 

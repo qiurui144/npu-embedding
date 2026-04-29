@@ -5,6 +5,180 @@
 > - **Rust 商用线**位于 [`rust/`](rust/)，有独立的 [`DEVELOP.md`](rust/DEVELOP.md)
 > - 两者共享 API 协议（`/api/v1/*`），Chrome 扩展可任意切换后端
 
+## 分支模型（GitFlow Lite）
+
+仓库采用简化的 GitFlow，**只有两条长期分支**：
+
+| 分支 | 用途 | 推送方式 |
+|------|------|---------|
+| `main` | **稳定发布线**。每次合入对应一个 git tag（`vX.Y.Z`）。生产部署、外部用户安装包从这里出。 | 仅通过 `develop → main` PR + tag 合入 |
+| `develop` | **集成线**。日常开发汇总，所有 feature/* 在这里集成验证后再升 `main`。 | 仅通过 `feature/* → develop` PR 合入 |
+| `feature/<name>` | **短期特性分支**。一个 feature/sprint 一条，merge 后**立即删除**（远端 + 本地）。命名约定：`feature/sprint-N-<thing>` 或 `feature/<topic>`。 | 本地开发 → push → PR → squash merge |
+
+### Tag 时机
+
+- **`vX.Y.Z-alpha.N`**：`develop` 上完成一个 sprint 的成果聚合，先打 alpha 跑内部 dogfood / Playwright E2E。例：`v0.6.0-alpha.1`
+- **`vX.Y.Z-beta.N`**：alpha 修完反馈后，外部小范围灰度
+- **`vX.Y.Z-rc.N`**：候选发布，准备合入 `main`
+- **`vX.Y.Z`**：正式发布。**只在 `main` 分支打**。tag message 列出累积 commit 数 + 核心能力清单 + 测试统计
+
+### Tag 双轨制（v0.7+ 起明确）
+
+attune 的发布产物分两条独立线，对应**两个独立 tag 命名空间 + 两个独立 CI workflow**：
+
+| Tag 前缀 | 触发的 workflow | 产物 | 适用场景 |
+|---------|----------------|------|---------|
+| `vX.Y.Z[-alpha/beta/rc.N]` | `.github/workflows/rust-release.yml` | **server / cli 二进制 tarball**（attune-server-headless + attune CLI），跨 Linux x86_64/aarch64 + macOS x86_64/arm64 + Windows x86_64 | 开发者、NAS 部署、服务端、headless 场景 |
+| `desktop-vX.Y.Z[-alpha/beta/rc.N]` | `.github/workflows/desktop-release.yml` | **Tauri 桌面安装器**（NSIS / MSI / .deb / AppImage） | 终端用户桌面安装（含 Web UI） |
+
+**两条线版本号必须保持一致**（如同时发 v0.6.0 + desktop-v0.6.0），用同一份 RELEASE.md changelog。
+
+### Release Checklist（GA 发布流程）
+
+候选 release（rc.N）通过 dogfood 后，正式 GA 流程严格按以下顺序：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. develop 端验收                                             │
+│    □ 6 层测试金字塔全绿（unit/integration/smoke/corpus/       │
+│       quality/e2e — 共 1235+ 测试）                            │
+│    □ 20 轮全面健康检查 ≥ 17/20 PASS                           │
+│    □ Playwright E2E 主流程绿（参照 docs/e2e-test-report.md）  │
+│    □ rc.N 已跑过 ≥ 24h 无 regression                          │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. develop → main 合入                                        │
+│    git checkout main                                          │
+│    git pull origin main                                       │
+│    git merge develop --no-ff -m "merge: develop → main for vX │
+│    # 预期无冲突（main 永远是 develop 的祖先）                  │
+│    git push origin main                                       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 3. 在 main 上打两个 GA tag（双轨同时）                        │
+│    git checkout main                                          │
+│    git tag -a vX.Y.Z -m "vX.Y.Z: <核心能力> + <测试统计>"      │
+│    git tag -a desktop-vX.Y.Z -m "desktop vX.Y.Z: <安装器变更>" │
+│    git push origin vX.Y.Z desktop-vX.Y.Z                      │
+│    # 上述两条 push 自动触发对应 workflow                      │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 4. 验证 CI 产物                                                │
+│    □ rust-release.yml ✅ 5 平台二进制 tarball 上传 GitHub      │
+│      Releases (vX.Y.Z 页面)                                   │
+│    □ desktop-release.yml ✅ Win+Linux 安装器上传 GitHub        │
+│      Releases (desktop-vX.Y.Z 页面)                           │
+│    □ 校验 SHA256（rust-release.yml 自动生成 *.sha256）        │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 5. README + 官网更新                                           │
+│    □ README.md / README.zh.md Download 表格更新到 vX.Y.Z      │
+│    □ official-web (cloud/) v 号更新                            │
+│    □ wiki-web 跟进 (release notes)                             │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 6. develop 起新版本周期                                        │
+│    git checkout develop                                       │
+│    # 接下来的 commits 自然进入下一个 vX.Y+1 周期              │
+│    # （不需要手动 bump 版本号，rc.N tag 即标记节奏）          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键不变量**：
+- ❌ **永不**在 develop 上打 `vX.Y.Z` 无后缀 tag — 那是 main 专属
+- ❌ **永不** force-push main 或 develop —（CLAUDE.md 已禁）
+- ❌ **永不**直接 commit 到 main — 必须经 develop 合入
+- ✅ **永远**两条 tag 同步 push（`vX.Y.Z` + `desktop-vX.Y.Z`），让 GA 用户能同时拿到 server 和 desktop 产物
+
+### 远端清理
+
+feature 分支 squash merge 后**立刻删远端**，避免分支墓地：
+
+```bash
+git push origin --delete feature/<name>
+git fetch --prune
+git branch -d feature/<name>     # 本地删
+```
+
+GitHub 网页端勾选"Delete branch"也可以。
+
+## 编译命令汇总
+
+### Rust 商用线
+
+```bash
+# 本地原生编译（Linux x86_64 / Windows x86_64 / macOS）
+cd rust && cargo build --release
+# 产物: rust/target/release/attune-server (~30 MB 静态二进制)
+
+# 嵌入式 Web UI 一同编译（include_str! 自动打包）
+cd rust && cargo build --release -p attune-server
+
+# Linux → Windows 交叉编译（需要 cargo-xwin）
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+cd rust && cargo xwin build --release --target x86_64-pc-windows-msvc
+
+# Linux → aarch64（K3 一体机 / 树莓派）
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+rustup target add aarch64-unknown-linux-gnu
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+  cargo build --release --target aarch64-unknown-linux-gnu
+
+# Tauri 2 Desktop 打包（Win MSI / Linux deb / AppImage）
+cd apps/desktop && cargo tauri build
+# Linux 产物: src-tauri/target/release/bundle/{deb,appimage}/*
+# Windows 产物: src-tauri/target/release/bundle/msi/*.msi（需在 Windows 上跑）
+```
+
+### Python 原型线
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -e ".[dev]"
+
+# AppImage（Linux）
+cd packaging && bash build-appimage.sh
+
+# NSIS EXE（Windows，需要 Wine 或在 Windows 上跑）
+cd packaging && makensis attune.nsi
+```
+
+### Web UI（Preact + Vite）
+
+```bash
+cd rust/crates/attune-server/ui
+npm install --registry https://registry.npmmirror.com
+npm run build         # 产物 → dist/，会被 attune-server cargo build 通过 include_str! 内嵌
+```
+
+### Chrome 扩展
+
+```bash
+cd extension
+npm install --registry https://registry.npmmirror.com
+npm run build         # 三阶段构建（pages / content IIFE / background ESM）
+# 产物: extension/dist/，加载到 chrome://extensions 测试
+```
+
+### 验证测试
+
+```bash
+# Rust 全量
+cd rust && cargo test --release --workspace -- --test-threads=2
+
+# Python 全量
+pytest tests/ -v
+
+# Playwright E2E（扩展 + UI）
+cd rust/crates/attune-server/ui && npm run test:e2e
+```
+
 ## 环境搭建
 
 ```bash
@@ -72,9 +246,9 @@ extension/                  # Chrome 扩展 (Manifest V3 + Preact + Vite)
 │   ├── content/            # Content Script
 │   │   ├── detector.js     # 平台适配器 (ChatGPT/Claude/Gemini)
 │   │   ├── capture.js      # MutationObserver 对话捕获
-│   │   ├── injector.js     # 无感前缀注入（动态预算）
 │   │   ├── indicator.js    # 状态指示器
 │   │   └── index.js        # 入口整合
+│   │   # 注：injector.js 于 cleanup-r15 删除（2026-04-12 转 RAG 后弃用）
 │   ├── background/worker.js    # 消息路由 + 去重 + 健康检查 + 会话感知加权
 │   ├── sidepanel/
 │   │   ├── pages/SearchPage.jsx

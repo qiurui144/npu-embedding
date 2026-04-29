@@ -1,6 +1,6 @@
 pub mod routes;
 pub mod state;
-pub mod middleware;
+pub(crate) mod middleware;
 
 use axum::middleware as axum_mw;
 use axum::routing::{delete, get, post};
@@ -8,6 +8,7 @@ use axum::http::{HeaderValue, Method};
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tracing_subscriber::EnvFilter;
 
 pub fn is_allowed_origin(s: &str) -> bool {
     s.starts_with("chrome-extension://")
@@ -36,6 +37,8 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .allow_credentials(true);
 
     Router::new()
+        // Health check（前缀外，方便 Tauri / monitor 直接探活）
+        .route("/health", get(routes::status::health))
         // Vault endpoints (no guard needed)
         .route("/api/v1/vault/status", get(routes::vault::vault_status))
         .route("/api/v1/vault/setup", post(routes::vault::vault_setup))
@@ -75,6 +78,13 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/items/stale", get(routes::items::list_stale_items))
         .route("/api/v1/items/{id}", get(routes::items::get_item).delete(routes::items::delete_item).patch(routes::items::update_item))
         .route("/api/v1/items/{id}/stats", get(routes::items::get_item_stats))
+        // v0.6 Phase A.5.4 per-file 隐私分级
+        .route("/api/v1/items/protected", get(routes::items::list_protected_items))
+        .route(
+            "/api/v1/items/{id}/privacy_tier",
+            get(routes::items::get_item_privacy)
+                .patch(routes::items::set_item_privacy),
+        )
         .route("/api/v1/settings", get(routes::settings::get_settings).patch(routes::settings::update_settings))
         .route("/api/v1/search", get(routes::search::search))
         .route("/api/v1/search/relevant", post(routes::search::search_relevant))
@@ -88,13 +98,56 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .route("/api/v1/clusters/rebuild", post(routes::clusters::rebuild))
         .route("/api/v1/clusters/{id}", get(routes::clusters::detail))
         .route("/api/v1/plugins", get(routes::plugins::list))
+        // E1 marketplace toggle (W4, 2026-04-27)
+        .route("/api/v1/plugins/{id}/toggle", post(routes::plugins::toggle))
+        .route("/api/v1/skills", get(routes::skills::list_skills))
         .route("/api/v1/patent/search", post(routes::patent::search))
         .route("/api/v1/patent/databases", get(routes::patent::databases))
         .route("/api/v1/profile/export", get(routes::profile::export))
         .route("/api/v1/profile/import", post(routes::profile::import))
+        // F1 topic distribution (W4, 2026-04-27) — 桌面"我的画像"页后端
+        .route("/api/v1/profile/topic_distribution", get(routes::profile::topic_distribution))
+        // Projects / Case 卷宗（Sprint 1 Phase B）
+        .route(
+            "/api/v1/projects",
+            get(routes::projects::list_projects).post(routes::projects::create_project),
+        )
+        .route("/api/v1/projects/{id}", get(routes::projects::get_project))
+        .route(
+            "/api/v1/projects/{id}/files",
+            get(routes::projects::list_project_files).post(routes::projects::add_file_to_project),
+        )
+        .route(
+            "/api/v1/projects/{id}/timeline",
+            get(routes::projects::list_project_timeline),
+        )
         .route("/api/v1/behavior/click", post(routes::behavior::log_click))
         .route("/api/v1/behavior/history", get(routes::behavior::history))
         .route("/api/v1/behavior/popular", get(routes::behavior::popular))
+        // G1 Browse signals (W3 batch B, 2026-04-27)
+        // per spec docs/superpowers/specs/2026-04-27-w3-batch-b-design.md §3
+        .route("/api/v1/browse_signals",
+               post(routes::browse_signals::record_batch)
+                   .get(routes::browse_signals::list)
+                   .delete(routes::browse_signals::delete))
+        // C1 Web search cache (W4-002, 2026-04-27) — close C1 loop
+        // Settings UI "清空 Web 搜索缓存" 入口
+        .route("/api/v1/web_search_cache",
+               get(routes::web_search_cache::count)
+                   .delete(routes::web_search_cache::delete))
+        // AI 底座状态（v0.6.0-rc.3, 2026-04-27）— Embedding / Rerank / OCR / ASR / LLM 可用性
+        .route("/api/v1/ai_stack", get(routes::ai_stack::status))
+        // G2 Auto bookmark candidates (W4, 2026-04-27)
+        // POST 不暴露：仅由 routes::browse_signals::record_batch high_engagement 路径写
+        .route("/api/v1/auto_bookmarks",
+               get(routes::auto_bookmarks::list)
+                   .delete(routes::auto_bookmarks::delete))
+        // v0.6 Phase A.5.3 隐私出网审计日志（GET 列表 + CSV 导出）
+        // 写入由 attune-core::Store::record_outbound 在 LLM provider hook 中触发，不暴露 POST
+        .route("/api/v1/audit/outbound", get(routes::audit::list))
+        .route("/api/v1/audit/outbound/export.csv", get(routes::audit::export_csv))
+        // v0.6 Phase A.5.5 隐私 tier 检测（Settings UI Privacy 页用）
+        .route("/api/v1/privacy/tier", get(routes::privacy::tier))
         // Status (full status requires vault access)
         .route("/api/v1/status", get(routes::status::status))
         // Index management
@@ -119,4 +172,95 @@ pub fn build_router(shared_state: Arc<state::AppState>) -> Router {
         .layer(axum_mw::from_fn_with_state(shared_state.clone(), middleware::bearer_auth_guard))
         .layer(cors)
         .with_state(shared_state)
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub no_auth: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 18900,
+            tls_cert: None,
+            tls_key: None,
+            no_auth: false,
+        }
+    }
+}
+
+/// 启动 attune-server 在当前 tokio runtime 上。
+///
+/// 用法：
+/// - `attune-server-headless` binary 直接 await
+/// - `attune-desktop` (Tauri) 也调这个函数把 axum 跑在 Tauri 的 tokio runtime
+pub async fn run_in_runtime(
+    config: ServerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().expect("'info' is a valid log directive")))
+        .try_init();
+
+    let hw = attune_core::platform::HardwareProfile::detect();
+    tracing::info!("hardware: {}", hw.summary());
+    let applied = hw.apply_recommended_env();
+    for (key, reason) in &applied {
+        tracing::info!(
+            "hardware: set {}={} — {}",
+            key,
+            std::env::var(key).unwrap_or_default(),
+            reason
+        );
+    }
+
+    let vault = attune_core::vault::Vault::open_default()?;
+    let require_auth = !config.no_auth;
+    if config.no_auth {
+        tracing::warn!("⚠  Authentication DISABLED via config.no_auth.");
+    }
+
+    let shared_state = Arc::new(state::AppState::new(vault, require_auth));
+    let app = build_router(shared_state);
+
+    let is_loopback = {
+        use std::net::IpAddr;
+        config.host == "localhost"
+            || config.host
+                .parse::<IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false)
+    };
+    let has_tls = config.tls_cert.is_some() && config.tls_key.is_some();
+    if !is_loopback && !has_tls {
+        tracing::warn!("⚠  Server bound to non-loopback '{}' without TLS.", config.host);
+    }
+    if !is_loopback && !require_auth {
+        tracing::warn!("⚠  Auth disabled on non-loopback '{}'.", config.host);
+    }
+
+    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
+
+    match (config.tls_cert.as_ref(), config.tls_key.as_ref()) {
+        (Some(cert), Some(key)) => {
+            tracing::info!("attune-server listening on https://{addr}");
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        _ => {
+            tracing::info!("attune-server listening on http://{addr}");
+            let listener = tokio::net::TcpListener::bind(&addr).await?;
+            axum::serve(listener, app).await?;
+        }
+    }
+
+    Ok(())
 }

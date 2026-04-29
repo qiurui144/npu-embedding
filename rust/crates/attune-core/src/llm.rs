@@ -116,14 +116,27 @@ pub struct OllamaLlmProvider {
     model: String,
 }
 
-/// 按优先级排列的默认 chat 模型候选
+/// 按优先级排列的默认 chat 模型候选。
+/// 用户可用 `ATTUNE_CHAT_MODEL` env var 覆盖。
+/// 顺序原则: 小→中→大。Ollama 加载大模型 (≥14B) 第一次推理慢 (>30s)，
+/// 长上下文 chunk summary 串行调用容易 timeout。优先选小模型让基础链路稳定。
 const PREFERRED_MODELS: &[&str] = &[
+    // 小模型（≤4B，首选，<10s 响应）
     "qwen2.5:7b",
     "qwen2.5:3b",
     "qwen2.5:1.5b",
+    "qwen3:4b",
+    "qwen3:1.7b",
+    "deepseek-r1:8b",
     "llama3.2:3b",
     "llama3.2:1b",
     "phi3:mini",
+    // 中等模型（8-14B，~30s 响应）
+    "qwen3:8b",
+    "deepseek-r1:14b",
+    // 大模型（≥30B，慢但能力最强；放最后）
+    "qwen3.5:35b-a3b-q3_k_m",  // MoE 30B 总参 / 3B 激活
+    "deepseek-r1:32b",
 ];
 
 impl OllamaLlmProvider {
@@ -139,8 +152,16 @@ impl OllamaLlmProvider {
         }
     }
 
-    /// 自动探测: 查询本地已下载的 chat 模型，按 PREFERRED_MODELS 优先级选择
+    /// 自动探测: 查询本地已下载的 chat 模型，按 PREFERRED_MODELS 优先级选择。
+    /// `ATTUNE_CHAT_MODEL=name` env var 覆盖（直接用，不探测）。
     pub fn auto_detect() -> Result<Self> {
+        // env var 优先：用户显式指定模型
+        if let Ok(model) = std::env::var("ATTUNE_CHAT_MODEL") {
+            if !model.is_empty() {
+                return Ok(Self::with_model(&model));
+            }
+        }
+
         let provider = Self::with_model("placeholder");
         let client = provider.client.clone();
         let url = format!("{}/api/tags", provider.base_url);
@@ -159,8 +180,8 @@ impl OllamaLlmProvider {
         })?;
 
         for preferred in PREFERRED_MODELS {
-            if available.iter().any(|a| a.starts_with(preferred)) {
-                return Ok(Self::with_model(preferred));
+            if let Some(actual) = available.iter().find(|a| a.starts_with(preferred)) {
+                return Ok(Self::with_model(actual));
             }
         }
         Err(VaultError::LlmUnavailable(format!(
@@ -363,13 +384,13 @@ impl MockLlmProvider {
     }
 
     pub fn push_response(&self, json: &str) {
-        self.responses.lock().unwrap().push(json.to_string());
+        self.responses.lock().unwrap_or_else(|e| e.into_inner()).push(json.to_string());
     }
 }
 
 impl LlmProvider for MockLlmProvider {
     fn chat(&self, _system: &str, _user: &str) -> Result<String> {
-        let mut guard = self.responses.lock().unwrap();
+        let mut guard = self.responses.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_empty() {
             return Err(VaultError::Classification("no mock response".into()));
         }
@@ -440,7 +461,7 @@ mod tests {
     #[test]
     fn mock_chat_with_history() {
         let mock = MockLlmProvider::new("test");
-        mock.push_response("history reply".into());
+        mock.push_response("history reply");
         let messages = vec![
             ChatMessage::system("sys prompt"),
             ChatMessage::user("hello"),

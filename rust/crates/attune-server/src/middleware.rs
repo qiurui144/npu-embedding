@@ -12,10 +12,11 @@ pub async fn vault_guard(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    // 允许 /vault/*, /status/health, 以及静态 UI 资源无需解锁
+    // 允许 /vault/*, /health, /status/health, 以及静态 UI 资源无需解锁
     let path = request.uri().path();
     if path.starts_with("/api/v1/vault")
         || path == "/api/v1/status/health"
+        || path == "/health"
         || path == "/"
         || path == "/ui"
         || path.starts_with("/ui/")
@@ -67,6 +68,7 @@ pub async fn bearer_auth_guard(
     // (only applies to non-forced-auth endpoints)
     if !is_always_auth
         && (path == "/api/v1/status/health"
+            || path == "/health"
             || path == "/"
             || path.starts_with("/ui/")
             || path == "/api/v1/vault/setup"

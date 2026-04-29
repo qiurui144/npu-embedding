@@ -58,3 +58,16 @@ config.local.yaml
 .env.local
 .worktrees/
 .playwright-mcp/
+
+# Tauri signing keys（私钥永不入 git；公钥已嵌进 tauri.conf.json）
+apps/attune-desktop/keys/dev_signing.key
+apps/attune-desktop/keys/dev_signing.key.pub
+
+# 测试报告 (运行时生成)
+tests/reports/
+
+# 临时调试目录 (CLAUDE.md 约定)
+tmp/
+
+# Claude Code 工具产物
+.claude/

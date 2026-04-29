@@ -114,3 +114,74 @@
 - 多轮对话上下文持续注入
 - Firefox / Edge 扩展适配
 - 端到端加密存储
+
+---
+
+## 版本号策略
+
+遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) + 预发布后缀：
+
+```
+vMAJOR.MINOR.PATCH[-PRERELEASE.N]
+
+例：v0.6.0-alpha.1   v0.6.0-beta.2   v0.6.0-rc.1   v0.6.0   v0.6.1
+```
+
+- **MAJOR**：API / 数据格式不兼容变更（迁移 vault 格式、改 `/api/v1/*` 协议、改加密方案）
+- **MINOR**：向后兼容的特性新增（新增 API、新增 UI 视图、新增插件接口）
+- **PATCH**：向后兼容的 bugfix 与小改动
+- **PRERELEASE 后缀**：
+  - `alpha.N` — 内部 dogfood，特性还在变，可能有未知 bug
+  - `beta.N` — 外部小范围灰度，特性冻结，主要修 bug
+  - `rc.N` — 候选发布，无新特性，仅严重 bug 修复
+
+正式版（无后缀）只在 `main` 分支打 tag。详见 `DEVELOP.md` 的「分支模型 / Tag 时机」。
+
+## v0.6 alpha 路径
+
+### v0.6.0-alpha.1（2026-04-26）
+
+`develop` 分支累积 **91 commits**（since `main`），覆盖 Sprint 0 / 0.5 / cleanup / Sprint 1 A-D / Sprint 2 A / 1.5 / D 七个阶段。
+
+**核心能力**：
+- Tauri 2 Desktop（Win MSI / Linux deb / AppImage）+ tauri-plugin-updater 自动升级
+- 攻坚加密 vault（Argon2id 64MB/3r + AES-256-GCM + Device Secret 三因子）
+- Project / Case 卷宗模型 + REST API（`/projects`, `/cases`, `/projects/{id}/recommend`）
+- 实体抽取（Person / Money / Date / CaseNo / Company）+ ProjectRecommender 跨证据链推荐
+- Workflow 引擎（schema + runner + ops，含 `write_annotation` / `evidence_chain` ops）
+- write_annotation **真持久化**（vault DEK 注入到 deterministic ops，密文落盘）
+- PluginRegistry — 启动时扫描 `~/.local/share/attune/plugins/`，发现 + 加载 + 缓存
+- file_added trigger via plugin registry（自动触发对应行业 workflow）
+- WebSocket push：`progress` / `project_recommendation` / `workflow_complete` 三类事件
+
+**测试**：423 passed / 0 failed / 5 ignored
+
+**Tag 已打，未推**：
+```bash
+git tag -l 'v0.6*'
+# v0.6.0-alpha.1
+```
+
+**留待后续 sprint**：
+- Sprint 2 Phase B — attune-pro 仓加 `evidence_chain.yaml` + 端到端实测
+- Sprint 2 Phase C — Intent Router（chat 自然语言 → skill 路由）
+- Sprint 2 Phase E — K3 ssh 部署 + Win MSI CI 实测
+
+## 远端清理 TODO（user push 时执行）
+
+`develop` 上有两条已 merge 的远端 feature 分支需要清理（避免分支墓地）：
+
+```bash
+# 推送本地 develop + 标签
+git push origin develop
+git push origin v0.6.0-alpha.1
+
+# 清理已合并的远端 feature 分支
+git push origin --delete feature/phase3-long-text
+git push origin --delete feature/search-rerank-infer
+
+# 同步本地引用
+git fetch --prune
+```
+
+后续每个 sprint 的 feature 分支 squash merge 入 `develop` 后**立即删远端**。详见 `DEVELOP.md` 的「分支模型 / 远端清理」。

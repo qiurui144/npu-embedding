@@ -6,9 +6,65 @@ import { useSignal, useComputed } from '@preact/signals';
 import { Button } from '../components';
 import { toast } from '../components/Toast';
 import { theme, vaultState, hardware, settings } from '../store/signals';
-import { setLocale, currentLocale } from '../i18n';
+import { setLocale, currentLocale, t } from '../i18n';
 import { loadSettings, patchSettings } from '../hooks/useSettings';
 import { api, clearToken } from '../store/api';
+
+/** LLM 厂商快捷预设 — 选中后自动填 endpoint + model，用户只需贴 API key。 */
+type LlmPresetKey =
+  | 'custom'
+  | 'deepseek'
+  | 'qwen'
+  | 'glm'
+  | 'kimi'
+  | 'baichuan'
+  | 'ollama'
+  | 'openai';
+
+interface LlmPreset {
+  label: string;
+  endpoint: string;
+  model: string;
+}
+
+const LLM_PRESETS: Record<LlmPresetKey, LlmPreset> = {
+  custom: { label: '自定义', endpoint: '', model: '' },
+  deepseek: {
+    label: 'DeepSeek (¥1/M tok, OpenAI 兼容)',
+    endpoint: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+  },
+  qwen: {
+    label: '阿里百炼 / Qwen (¥4/M tok)',
+    endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+  },
+  glm: {
+    label: '智谱 GLM (¥50/M tok)',
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-plus',
+  },
+  kimi: {
+    label: '月之暗面 Kimi (¥12/M tok)',
+    endpoint: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+  },
+  baichuan: {
+    label: '百川 (¥15/M tok)',
+    endpoint: 'https://api.baichuan-ai.com/v1',
+    model: 'Baichuan4-Turbo',
+  },
+  ollama: {
+    label: 'Ollama 本地（免费）',
+    endpoint: 'http://localhost:11434/v1',
+    model: 'qwen2.5:7b',
+  },
+  openai: {
+    label: 'OpenAI (~¥3/M tok)',
+    endpoint: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+  },
+};
 
 type SettingsTab = 'general' | 'ai' | 'data' | 'privacy' | 'about';
 
@@ -135,29 +191,29 @@ function Section({
 function GeneralPanel(): JSX.Element {
   return (
     <>
-      <Section title="外观">
-        <SettingRow label="主题">
+      <Section title={t('settings.section.appearance')}>
+        <SettingRow label={t('settings.row.theme')}>
           <select
             value={theme.value}
             onChange={(e) => (theme.value = e.currentTarget.value as 'light' | 'dark' | 'auto')}
             style={selectStyle}
           >
-            <option value="auto">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
+            <option value="auto">{t('settings.theme.auto')}</option>
+            <option value="light">{t('settings.theme.light')}</option>
+            <option value="dark">{t('settings.theme.dark')}</option>
           </select>
         </SettingRow>
-        <SettingRow label="语言">
+        <SettingRow label={t('settings.row.language')}>
           <select
             value={currentLocale.value}
             onChange={(e) => {
               setLocale(e.currentTarget.value as 'zh' | 'en');
-              toast('success', '已切换语言');
+              toast('success', t('settings.toast.lang_switched'));
             }}
             style={selectStyle}
           >
-            <option value="zh">中文</option>
-            <option value="en">English</option>
+            <option value="zh">{t('settings.lang.zh')}</option>
+            <option value="en">{t('settings.lang.en')}</option>
           </select>
         </SettingRow>
       </Section>
@@ -169,21 +225,117 @@ function AIPanel(): JSX.Element {
   const llm = useComputed(() => (settings.value?.llm as Record<string, unknown>) ?? {});
   const emb = useComputed(() => (settings.value?.embedding as Record<string, unknown>) ?? {});
 
+  // 编辑态（草稿值，保存按钮才下发）
+  const presetKey = useSignal<LlmPresetKey>('custom');
+  const draftEndpoint = useSignal<string>('');
+  const draftModel = useSignal<string>('');
+  const draftApiKey = useSignal<string>('');
+  const saving = useSignal(false);
+
+  // 同步 server 值到草稿（首次加载 / 外部更新时）
+  useEffect(() => {
+    draftEndpoint.value = (llm.value.endpoint as string) ?? '';
+    draftModel.value = (llm.value.model as string) ?? '';
+  }, [llm.value.endpoint, llm.value.model]);
+
+  const onPresetChange = (key: LlmPresetKey): void => {
+    presetKey.value = key;
+    if (key === 'custom') return; // 自定义：不动现有值
+    const preset = LLM_PRESETS[key];
+    draftEndpoint.value = preset.endpoint;
+    draftModel.value = preset.model;
+  };
+
+  const onSave = async (): Promise<void> => {
+    saving.value = true;
+    try {
+      const patch: Record<string, unknown> = {
+        llm: {
+          ...(settings.value?.llm as Record<string, unknown>),
+          endpoint: draftEndpoint.value,
+          model: draftModel.value,
+        },
+      };
+      // 只有用户填了新 key 才下发（避免覆盖已有 key）
+      if (draftApiKey.value.trim()) {
+        (patch.llm as Record<string, unknown>).api_key = draftApiKey.value.trim();
+      }
+      const ok = await patchSettings(patch);
+      if (ok) {
+        draftApiKey.value = ''; // 清空输入框（key 已加密落盘）
+        toast('success', '已保存 LLM 配置');
+      } else {
+        toast('error', '保存失败');
+      }
+    } finally {
+      saving.value = false;
+    }
+  };
+
   return (
     <>
       <Section title="LLM 后端">
+        <SettingRow label="快捷预设">
+          <select
+            value={presetKey.value}
+            onChange={(e) => onPresetChange(e.currentTarget.value as LlmPresetKey)}
+            style={{ ...selectStyle, minWidth: 240 }}
+            aria-label="LLM 厂商快捷预设"
+          >
+            {(Object.keys(LLM_PRESETS) as LlmPresetKey[]).map((k) => (
+              <option key={k} value={k}>
+                {LLM_PRESETS[k].label}
+              </option>
+            ))}
+          </select>
+        </SettingRow>
         <SettingRow label="Endpoint">
-          <code style={codeStyle}>
-            {(llm.value.endpoint as string) ?? '（本地 Ollama）'}
-          </code>
+          <input
+            type="text"
+            value={draftEndpoint.value}
+            onInput={(e) => (draftEndpoint.value = e.currentTarget.value)}
+            placeholder="https://api.example.com/v1"
+            style={inputStyle}
+          />
         </SettingRow>
         <SettingRow label="Chat 模型">
-          <code style={codeStyle}>{(llm.value.model as string) ?? '—'}</code>
+          <input
+            type="text"
+            value={draftModel.value}
+            onInput={(e) => (draftModel.value = e.currentTarget.value)}
+            placeholder="例：deepseek-chat / qwen-plus / gpt-4o-mini"
+            style={inputStyle}
+          />
         </SettingRow>
         <SettingRow label="API Key">
-          <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)' }}>
-            {llm.value.api_key_set ? '●●●●● 已配置' : '未配置'}
-          </span>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+            <input
+              type="password"
+              value={draftApiKey.value}
+              onInput={(e) => (draftApiKey.value = e.currentTarget.value)}
+              placeholder={llm.value.api_key_set ? '已配置（留空保留）' : '粘贴 sk-... '}
+              style={inputStyle}
+            />
+            <span
+              style={{
+                fontSize: 'var(--text-xs)',
+                color: 'var(--color-text-secondary)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {llm.value.api_key_set ? '●●●●●' : ''}
+            </span>
+          </div>
+        </SettingRow>
+        <SettingRow label="">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void onSave()}
+            disabled={saving.value}
+          >
+            {saving.value ? '保存中…' : '💾 保存 LLM 配置'}
+          </Button>
         </SettingRow>
       </Section>
 
@@ -258,6 +410,36 @@ function DataPanel(): JSX.Element {
 }
 
 function PrivacyPanel(): JSX.Element {
+  // v0.6 Phase A.5.5：Privacy tier 状态拉取
+  const privacyTier = useSignal<{
+    hardware_tier?: string;
+    available_layers?: string[];
+    l1_regex_available?: boolean;
+    l2_ner_available?: boolean;
+    l3_llm_available?: boolean;
+    upgrade_hint?: string | null;
+  } | null>(null);
+  const protectedItems = useSignal<{ count?: number; items?: string[] } | null>(null);
+  const auditCount = useSignal<number>(0);
+
+  const refreshPrivacy = async () => {
+    try {
+      const t = await api.get<typeof privacyTier.value>('/privacy/tier');
+      privacyTier.value = t;
+      const p = await api.get<{ count: number; items: string[] }>('/items/protected');
+      protectedItems.value = p;
+      const a = await api.get<{ total: number }>('/audit/outbound?limit=1');
+      auditCount.value = a.total || 0;
+    } catch (e) {
+      // best-effort, silent
+    }
+  };
+
+  // 首次挂载拉取
+  if (privacyTier.value === null && vaultState.value === 'unlocked') {
+    refreshPrivacy();
+  }
+
   return (
     <>
       <Section title="安全">
@@ -285,6 +467,62 @@ function PrivacyPanel(): JSX.Element {
           </Button>
         </SettingRow>
       </Section>
+
+      {/* v0.6 Phase A.5.5: 隐私分级状态 */}
+      <Section title="隐私分级 (Phase A.5)">
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', margin: '0 0 12px 0', lineHeight: 1.5 }}>
+          Attune 的"成本/隐私三层模型"：
+        </p>
+        <SettingRow label="L1 正则脱敏">
+          <span style={{ fontSize: 'var(--text-sm)', color: privacyTier.value?.l1_regex_available ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
+            {privacyTier.value?.l1_regex_available ? '✓ 默认启用 (12 类格式化 PII)' : '— 未就绪'}
+          </span>
+        </SettingRow>
+        <SettingRow label="L2 NER">
+          <span style={{ fontSize: 'var(--text-sm)' }}>
+            {privacyTier.value?.l2_ner_available ? '✓ 可用' : '🟡 v0.6 排期 (~300MB ONNX 模型)'}
+          </span>
+        </SettingRow>
+        <SettingRow label="L3 LLM 脱敏">
+          <span style={{ fontSize: 'var(--text-sm)' }}>
+            {privacyTier.value?.l3_llm_available ? '✓ 可用 (Tier T3+/K3)' : '🟡 v0.7 排期，需高端硬件'}
+          </span>
+        </SettingRow>
+        {privacyTier.value?.upgrade_hint ? (
+          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: '8px 0 0 0', fontStyle: 'italic' }}>
+            💡 {privacyTier.value.upgrade_hint}
+          </p>
+        ) : <></>}
+      </Section>
+
+      <Section title="🔒 受保护文件 (per-file L0)">
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', margin: '0 0 8px 0', lineHeight: 1.5 }}>
+          标记为 L0 的文件 chunk 永不出现在云端 LLM context 里（强制本地 LLM）。
+          目前已标记: <strong>{protectedItems.value?.count ?? 0}</strong> 个文件。
+        </p>
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-secondary)', margin: 0, lineHeight: 1.5 }}>
+          标记方法：在文件列表右键文件 → "标记为机密" 或 PATCH /api/v1/items/{'{id}'}/privacy_tier。
+        </p>
+      </Section>
+
+      <Section title="出网审计日志">
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', margin: '0 0 12px 0', lineHeight: 1.5 }}>
+          每次云端 LLM 调用都本地落 audit log（SHA256 hash + 模型 + token 数 + 脱敏统计，<strong>0 用户原文落库</strong>）。
+          已记录: <strong>{auditCount.value}</strong> 条。
+        </p>
+        <SettingRow label="导出 CSV">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              window.open('/api/v1/audit/outbound/export.csv', '_blank');
+            }}
+          >
+            📥 下载 CSV
+          </Button>
+        </SettingRow>
+      </Section>
+
       <Section title="遥测">
         <p style={{ fontSize: 'var(--text-sm)', color: 'var(--color-text-secondary)', margin: 0 }}>
           Attune 默认关闭所有遥测。后续版本可 opt-in 匿名使用统计。
@@ -340,6 +578,17 @@ const selectStyle: JSX.CSSProperties = {
   background: 'var(--color-surface)',
   border: '1px solid var(--color-border)',
   borderRadius: 'var(--radius-sm)',
+};
+
+const inputStyle: JSX.CSSProperties = {
+  padding: '4px var(--space-2)',
+  fontSize: 'var(--text-sm)',
+  background: 'var(--color-surface)',
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-sm)',
+  color: 'var(--color-text)',
+  minWidth: 280,
+  fontFamily: 'var(--font-mono)',
 };
 
 const codeStyle: JSX.CSSProperties = {

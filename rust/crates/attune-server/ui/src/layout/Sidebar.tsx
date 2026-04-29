@@ -122,7 +122,9 @@ function BrandAndSearch({ collapsed }: { collapsed: boolean }): JSX.Element {
             textAlign: 'left',
           }}
           onClick={() => {
-            /* TODO Phase 6: Cmd+K palette */
+            document.dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true, bubbles: true }),
+            );
           }}
         >
           <span aria-hidden="true">🔍</span>
@@ -175,7 +177,7 @@ function NewChatButton({ collapsed }: { collapsed: boolean }): JSX.Element {
         }}
       >
         <span aria-hidden="true">+</span>
-        {!collapsed && <span>新对话</span>}
+        {!collapsed && <span>{t('sidebar.new_chat')}</span>}
       </button>
     </div>
   );
@@ -200,7 +202,7 @@ function SessionList({ collapsed }: { collapsed: boolean }): JSX.Element {
           textAlign: 'center',
         }}
       >
-        还没有对话
+        {t('sidebar.no_sessions')}
       </div>
     );
   }
@@ -217,9 +219,9 @@ function SessionList({ collapsed }: { collapsed: boolean }): JSX.Element {
         padding: 'var(--space-2) 0',
       }}
     >
-      {Object.entries(groups).map(([label, list]) =>
+      {Object.entries(groups).map(([groupKey, list]) =>
         list.length === 0 ? null : (
-          <div key={label} style={{ marginBottom: 'var(--space-3)' }}>
+          <div key={groupKey} style={{ marginBottom: 'var(--space-3)' }}>
             <div
               style={{
                 padding: '0 var(--space-4)',
@@ -229,7 +231,7 @@ function SessionList({ collapsed }: { collapsed: boolean }): JSX.Element {
                 marginBottom: 'var(--space-1)',
               }}
             >
-              {label}
+              {t(`sidebar.session.${groupKey}`)}
             </div>
             {list.map((s) => (
               <SessionItem key={s.id} session={s} />
@@ -267,18 +269,20 @@ function SessionItem({ session: s }: { session: { id: string; title: string } })
         textOverflow: 'ellipsis',
       }}
     >
-      {s.title || '未命名对话'}
+      {s.title || t('sidebar.untitled_session')}
     </button>
   );
 }
 
 // ── ④ 次级导航 ──────────────────────────────────────────────
-type NavItem = { view: View; icon: string; label: string };
+type NavItem = { view: View; icon: string; labelKey: string };
 const NAV_ITEMS: NavItem[] = [
-  { view: 'items', icon: '📄', label: '条目' },
-  { view: 'remote', icon: '🔗', label: '远程目录' },
-  { view: 'knowledge', icon: '📊', label: '知识全景' },
-  { view: 'settings', icon: '⚙', label: '设置' },
+  { view: 'items', icon: '📄', labelKey: 'sidebar.nav.items' },
+  { view: 'projects', icon: '🗂', labelKey: 'sidebar.nav.projects' },  // Pinyin-Latin term
+  { view: 'remote', icon: '🔗', labelKey: 'sidebar.nav.remote' },
+  { view: 'knowledge', icon: '📊', labelKey: 'sidebar.nav.knowledge' },
+  { view: 'skills', icon: '🧠', labelKey: 'sidebar.nav.skills' },
+  { view: 'settings', icon: '⚙', labelKey: 'sidebar.nav.settings' },
 ];
 
 function SecondaryNav({ collapsed }: { collapsed: boolean }): JSX.Element {
@@ -301,7 +305,7 @@ function SecondaryNav({ collapsed }: { collapsed: boolean }): JSX.Element {
             type="button"
             onClick={() => (currentView.value = item.view)}
             aria-current={active ? 'page' : undefined}
-            aria-label={item.label}
+            aria-label={t(item.labelKey)}
             className="interactive"
             style={{
               display: 'flex',
@@ -328,7 +332,7 @@ function SecondaryNav({ collapsed }: { collapsed: boolean }): JSX.Element {
             <span aria-hidden="true" style={{ fontSize: 'var(--text-base)' }}>
               {item.icon}
             </span>
-            {!collapsed && <span>{item.label}</span>}
+            {!collapsed && <span>{t(item.labelKey)}</span>}
           </button>
         );
       })}
@@ -398,7 +402,7 @@ function StatusBar({ collapsed }: { collapsed: boolean }): JSX.Element {
             U
           </span>
           <span style={{ flex: 1 }}>
-            {vault === 'unlocked' ? '已解锁' : '已锁定'}
+            {vault === 'unlocked' ? t('sidebar.vault.unlocked') : t('sidebar.vault.locked')}
           </span>
         </button>
       )}
@@ -440,17 +444,17 @@ function AccountMenu({ onClose }: { onClose: () => void }): JSX.Element {
       }}
     >
       <MenuItem onClick={() => { currentView.value = 'settings'; onClose(); }}>
-        ⚙ 设置
+        {t('sidebar.menu.settings')}
       </MenuItem>
-      <MenuItem onClick={() => { /* TODO lock vault */ onClose(); }}>
-        🔒 锁定 vault
+      <MenuItem onClick={() => { onClose(); }}>
+        {t('sidebar.menu.lock_vault')}
       </MenuItem>
-      <MenuItem onClick={() => { /* TODO theme toggle */ onClose(); }}>
-        🌓 切换主题
+      <MenuItem onClick={() => { onClose(); }}>
+        {t('sidebar.menu.toggle_theme')}
       </MenuItem>
       <div style={{ height: 1, background: 'var(--color-border)', margin: 'var(--space-1) 0' }} />
-      <MenuItem onClick={() => { /* TODO about */ onClose(); }}>
-        关于 Attune
+      <MenuItem onClick={() => { onClose(); }}>
+        {t('sidebar.menu.about')}
       </MenuItem>
     </div>
   );
@@ -489,19 +493,20 @@ function groupSessionsByDate<T extends { created_at: string }>(sessions: T[]): R
   const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
   const weekStart = new Date(todayStart.getTime() - 7 * 86_400_000);
 
+  // i18n: 用稳定 key 作为 group id，UI 渲染时再 t() 翻译
   const groups: Record<string, T[]> = {
-    今天: [],
-    昨天: [],
-    本周: [],
-    更早: [],
+    today: [],
+    yesterday: [],
+    this_week: [],
+    older: [],
   };
 
   for (const s of sessions) {
     const d = new Date(s.created_at);
-    if (d >= todayStart) groups['今天']!.push(s);
-    else if (d >= yesterdayStart) groups['昨天']!.push(s);
-    else if (d >= weekStart) groups['本周']!.push(s);
-    else groups['更早']!.push(s);
+    if (d >= todayStart) groups['today']!.push(s);
+    else if (d >= yesterdayStart) groups['yesterday']!.push(s);
+    else if (d >= weekStart) groups['this_week']!.push(s);
+    else groups['older']!.push(s);
   }
   return groups;
 }

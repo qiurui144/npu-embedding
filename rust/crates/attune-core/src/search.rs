@@ -78,8 +78,92 @@ pub fn apply_cross_lang_penalty(results: &mut [SearchResult], query_lang: Lang) 
     }
 }
 
+fn default_corpus_domain() -> String { "general".into() }
+
+/// v0.6 Phase B F-Pro: cross-domain 降权系数 (与 CROSS_LANG_PENALTY 共用机制)。
+/// query domain 已知（如 'legal'）但 doc.corpus_domain 不同（如 'tech'）→ score *= 该系数。
+/// 0.4 比 cross-lang 0.3 略高 — 同语种跨领域比跨语言保留更多召回（专业术语共享）。
+pub const CROSS_DOMAIN_PENALTY: f32 = 0.4;
+
+/// v0.6 Phase B F-Pro Stage 4：从 query 文本检测领域意图（零 LLM 调用）。
+/// 关键词命中策略：每个 domain 维护一组特征词，统计命中数最多的 domain 返回。
+/// 返回 None = 未明确意图（不应用 cross-domain penalty，保持现状）。
+///
+/// 关键词集建议来源：vertical plugin.yaml::chat_trigger.project_keywords。
+/// 当 plugin loader 已加载 vertical plugin 时调用方应优先用 plugin 数据；
+/// 这里仅提供 hardcoded fallback 让 OSS 裸装也能用基础识别能力。
+pub fn detect_query_domain(query: &str) -> Option<String> {
+    use std::collections::HashMap;
+
+    // hardcoded fallback：覆盖 attune-pro 6 vertical 的核心特征词
+    // 每个 domain 选 12-20 个高判别性词（避免泛词如"问题/可以"）
+    let keywords_by_domain: &[(&str, &[&str])] = &[
+        ("legal", &[
+            "法律", "法条", "法规", "法院", "判决", "案件", "案号", "诉讼", "起诉", "判例",
+            "民法", "刑法", "民法典", "合同法", "公司法", "商标法", "专利法",
+            "借贷", "商标", "股东", "股权", "侵权", "违约", "赔偿", "仲裁",
+            "反洗钱", "劳动合同", "工伤", "婚姻", "继承",
+        ]),
+        ("tech", &[
+            // Rust / 系统编程
+            "Rust", "ownership", "borrow", "lifetime",
+            // Python / 通用
+            "Python", "decorator", "tuple", "list comprehension",
+            // 算法 / 数据结构
+            "算法", "数据结构", "动态规划", "二叉树", "哈希", "梯度下降", "过拟合",
+            // 系统 / 分布式
+            "Linux", "Docker", "kubernetes", "k8s", "Redis", "MySQL", "PostgreSQL",
+            "分布式", "TCP", "HTTP", "Socket",
+            // 数据库
+            "SQL", "索引", "事务",
+        ]),
+        ("medical", &[
+            "病历", "诊断", "症状", "用药", "处方", "手术", "病人", "患者",
+            "临床", "医院", "禁忌", "副作用", "剂量",
+        ]),
+        ("patent", &[
+            "专利", "权利要求", "申请号", "IPC", "OA", "审查", "优先权", "新颖性",
+            "创造性", "实用新型", "外观设计", "PCT",
+        ]),
+    ];
+
+    let q = query.to_lowercase();
+    let mut hit_counts: HashMap<&str, usize> = HashMap::new();
+    for (domain, kws) in keywords_by_domain {
+        for kw in *kws {
+            // 中文命中按子串；英文命中按子串（lowercase 已处理大小写）
+            if q.contains(&kw.to_lowercase()) {
+                *hit_counts.entry(*domain).or_insert(0) += 1;
+            }
+        }
+    }
+    // 至少 1 个命中才返回（避免误识别），同分则按表序优先
+    hit_counts
+        .into_iter()
+        .max_by_key(|(_, c)| *c)
+        .filter(|(_, c)| *c >= 1)
+        .map(|(d, _)| d.to_string())
+}
+
+/// 跨领域降权：query 有 domain hint（如 "legal"）时，doc.corpus_domain 不匹配的降权。
+/// query domain="general" 或 None：跳过（保持现有行为，向后兼容）。
+/// query domain="legal" + doc.corpus_domain="tech": score *= CROSS_DOMAIN_PENALTY。
+/// query domain="legal" + doc.corpus_domain="legal" / "general": 保持原分。
+pub fn apply_cross_domain_penalty(results: &mut [SearchResult], query_domain: Option<&str>) {
+    let qd = match query_domain {
+        Some(d) if !d.is_empty() && d != "general" => d,
+        _ => return,
+    };
+    for r in results.iter_mut() {
+        // doc.corpus_domain == 'general' 不降权（默认 corpus 不强制归类）
+        if r.corpus_domain != "general" && r.corpus_domain != qd {
+            r.score *= CROSS_DOMAIN_PENALTY;
+        }
+    }
+}
+
 /// 搜索结果
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SearchResult {
     pub item_id: String,
     pub score: f32,
@@ -87,6 +171,28 @@ pub struct SearchResult {
     pub content: String,
     pub source_type: String,
     pub inject_content: Option<String>,
+    /// v0.6 Phase B F-Pro：item.corpus_domain（legal/tech/medical/.../general）。
+    /// search 阶段按 query intent 跨域降权防止"反洗钱"被 cs-notes 顶占。
+    /// 默认 "general"（无标签 corpus）。
+    #[serde(default = "default_corpus_domain")]
+    pub corpus_domain: String,
+    // ── F2 (W3 batch A, 2026-04-27)：breadcrumb + offset 透传 ─────────────
+    // per spec docs/superpowers/specs/2026-04-27-w3-batch-a-design.md §4
+    // 关闭 W2 batch 1 的 Citation 占位状态；search 阶段 join chunk_breadcrumbs
+    // sidecar 表填入数据，ChatEngine 后续映射到 Citation。
+    /// 启发式：F2 v1 用 item 第一个 chunk 的 path（W5+ 切换到精确 chunk 命中）。
+    /// per reviewer S2：skip_serializing_if 让空 Vec 不出现在 JSON，
+    /// 保持 Chrome 扩展旧客户端契约（之前不存在此字段）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breadcrumb: Vec<String>,
+    /// chunk 在 item.content 的 char-level 区间。无 sidecar 数据时 None。
+    /// **Known limitation (W3 batch A v1, per reviewer S1)**：当前 offset 是 sidecar
+    /// 内累计 char count，不一定对齐原文 char index（行末 `\n` 处理 + `\r\n` 剥离会
+    /// 引入漂移）。适合 item 顶层导航；W5+ 真正按行号映射回原文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_offset_start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_offset_end: Option<usize>,
 }
 
 /// 三阶段搜索参数
@@ -97,13 +203,58 @@ pub struct SearchParams {
     pub initial_k: usize,
     /// Reranker 入口前的候选数量
     pub intermediate_k: usize,
+    // ── J3：vector 召回 cosine 阈值（W2，2026-04-27）───────────────────────
+    //
+    // 设计来源（per docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md §J3）：
+    //   吴师兄《鹅厂面试官追问：你的 RAG 能跑通 Demo？》§2 "召回阈值：一个参数，决定生死"
+    //   https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw
+    //   - 0.65：召回率 0.89，top-5 含 2 个噪音
+    //   - 0.72：召回率 0.84，top-5 基本有用（精度优先推荐）
+    //   - 0.78：召回率 0.71，开始漏边缘 case
+    //
+    // attune 默认 0.65（保守端）平衡召回与精度；用户可在 Settings 调到 0.72 求精度。
+    // None = 不过滤（向后兼容，初版调用方未传时不破行为）。
+    /// vector 召回 cosine 阈值。Some(0.65) 默认；低于此分数的 vector 结果在 RRF 前丢弃。
+    pub min_score: Option<f32>,
+
+    /// v0.6 Phase B F-Pro：query 意图领域提示。Some("legal") → 跨领域文档降权。
+    /// None / Some("general") = 不应用 cross-domain penalty（默认行为，保留召回多样性）。
+    /// 由 detect_query_domain (Stage 4) 自动从 query 推断 + plugin keywords 判断。
+    pub domain_hint: Option<String>,
 }
 
 impl SearchParams {
+    /// 通用 search 路径默认 — **不**应用 cosine 阈值过滤，保持 W2 之前的行为契约。
+    /// 用于 `/api/v1/search` / `/api/v1/search/relevant` (Chrome 扩展) — 这些 route 的
+    /// 用户期望"全部召回，自己挑"。
+    /// per reviewer S2：自动启用 0.65 会让 Chrome 扩展 query 含义模糊时全无结果（cosine 0.4-0.6）。
     pub fn with_defaults(top_k: usize) -> Self {
         let initial_k = (top_k * 5).clamp(20, 100);
         let intermediate_k = (top_k * 2).clamp(top_k, 40);
-        Self { top_k, initial_k, intermediate_k }
+        Self {
+            top_k,
+            initial_k,
+            intermediate_k,
+            min_score: None,
+            domain_hint: None,
+        }
+    }
+
+    /// v0.6 Phase B F-Pro：链式设置 domain_hint
+    pub fn with_domain_hint(mut self, hint: impl Into<String>) -> Self {
+        let s = hint.into();
+        if !s.is_empty() && s != "general" {
+            self.domain_hint = Some(s);
+        }
+        self
+    }
+
+    /// **RAG / chat 专用**默认 — 启用 J3 cosine 阈值 0.65 过滤噪音
+    /// per spec §J3 + 吴师兄文章曲线。chat 主流程 confidence < 3 时降到 0.55 二次检索。
+    pub fn with_defaults_for_rag(top_k: usize) -> Self {
+        let mut s = Self::with_defaults(top_k);
+        s.min_score = Some(0.65);
+        s
     }
 }
 
@@ -224,18 +375,33 @@ pub fn search_with_context(
         .unwrap_or_default();
 
     // 2. 向量搜索（initial_k）
+    // J3 (per spec §J3)：拿到 vector 结果后立即按 min_score 过滤；
+    // 低于阈值的进 RRF 前丢弃，避免噪音污染融合排序。
     let (vec_results, query_vec): (Vec<(String, f32)>, Option<Vec<f32>>) =
         match (&ctx.embedding, &ctx.vectors) {
             (Some(emb), Some(vecs)) => {
                 match emb.embed(&[query]) {
                     Ok(e) if !e.is_empty() => {
                         let qv = e[0].clone();
-                        let vr = vecs.search(&qv, params.initial_k)
+                        let raw: Vec<(String, f32)> = vecs.search(&qv, params.initial_k)
                             .unwrap_or_default()
                             .into_iter()
                             .map(|(meta, score)| (meta.item_id, score))
                             .collect();
-                        (vr, Some(qv))
+                        let filtered: Vec<(String, f32)> = match params.min_score {
+                            Some(threshold) => {
+                                let kept: Vec<_> = raw.into_iter()
+                                    .filter(|(_, s)| *s >= threshold)
+                                    .collect();
+                                log::info!(
+                                    "search J3: vector min_score={:.3} kept {} results",
+                                    threshold, kept.len()
+                                );
+                                kept
+                            }
+                            None => raw,
+                        };
+                        (filtered, Some(qv))
                     }
                     _ => (vec![], None),
                 }
@@ -254,10 +420,23 @@ pub fn search_with_context(
     let fused = rrf_fuse(&vec_results, &ft_results, DEFAULT_VECTOR_WEIGHT, DEFAULT_FULLTEXT_WEIGHT, params.intermediate_k);
     log::info!("search stages: rrf_fused={}", fused.len());
 
-    // 4. 获取并解密 items
+    // 4. 获取并解密 items + F2 (W3 batch A) 拉 breadcrumb sidecar
     let mut results: Vec<SearchResult> = Vec::new();
     for (item_id, score) in &fused {
         if let Ok(Some(item)) = ctx.store.get_item(ctx.dek, item_id) {
+            // F2 (per R04 P0-1)：breadcrumb 现已加密落盘，需传 dek 解密
+            let (breadcrumb, off_start, off_end) = ctx
+                .store
+                .get_first_chunk_breadcrumb(ctx.dek, &item.id)
+                .ok()
+                .flatten()
+                .map(|(p, s, e)| (p, Some(s), Some(e)))
+                .unwrap_or_default();
+            // v0.6 Phase B F-Pro：拉 corpus_domain；item 不存在 / 列缺时回退 'general'
+            let corpus_domain = ctx
+                .store
+                .get_item_corpus_domain(&item.id)
+                .unwrap_or_else(|_| "general".to_string());
             results.push(SearchResult {
                 item_id: item.id,
                 score: *score,
@@ -265,6 +444,10 @@ pub fn search_with_context(
                 content: item.content,
                 source_type: item.source_type,
                 inject_content: None,
+                breadcrumb,
+                chunk_offset_start: off_start,
+                chunk_offset_end: off_end,
+                corpus_domain,
             });
         }
     }
@@ -310,6 +493,10 @@ pub fn search_with_context(
     // 语言匹配降权：任何排序策略之后统一应用，不改变同语言相对顺序
     apply_cross_lang_penalty(&mut results, query_lang);
 
+    // v0.6 Phase B F-Pro：跨领域降权（同语种跨领域污染防御）
+    // 如 query="反洗钱"（domain_hint=legal）+ doc.corpus_domain=tech → score *= 0.4
+    apply_cross_domain_penalty(&mut results, params.domain_hint.as_deref());
+
     // 最终排序
     results.sort_by(|a, b| b.score.partial_cmp(&a.score)
         .unwrap_or(std::cmp::Ordering::Equal));
@@ -351,13 +538,11 @@ mod tests {
             SearchResult {
                 item_id: "1".into(), score: 0.2, title: "references-and-borrowing".into(),
                 content: "In Rust, references allow you to refer to a value without taking ownership.".into(),
-                source_type: "file".into(), inject_content: None,
-            },
+                source_type: "file".into(), inject_content: None, ..Default::default() },
             SearchResult {
                 item_id: "2".into(), score: 0.3, title: "民法典".into(),
                 content: "中华人民共和国民法典第一编 总则".into(),
-                source_type: "file".into(), inject_content: None,
-            },
+                source_type: "file".into(), inject_content: None, ..Default::default() },
         ];
         apply_cross_lang_penalty(&mut results, Lang::En);
         assert_eq!(results[0].score, 0.2, "英文文档不降权");
@@ -371,8 +556,7 @@ mod tests {
             SearchResult {
                 item_id: "1".into(), score: 0.5, title: "rust 所有权".into(),
                 content: "Rust ownership system...".into(),
-                source_type: "file".into(), inject_content: None,
-            },
+                source_type: "file".into(), inject_content: None, ..Default::default() },
         ];
         apply_cross_lang_penalty(&mut results, Lang::Mixed);
         assert_eq!(results[0].score, 0.5, "Mixed query 不应降权任何结果");
@@ -414,12 +598,10 @@ mod tests {
         let mut results = vec![
             SearchResult {
                 item_id: "a".into(), score: 0.8, title: "A".into(),
-                content: "A".repeat(3000), source_type: "note".into(), inject_content: None,
-            },
+                content: "A".repeat(3000), source_type: "note".into(), inject_content: None, ..Default::default() },
             SearchResult {
                 item_id: "b".into(), score: 0.2, title: "B".into(),
-                content: "B".repeat(3000), source_type: "note".into(), inject_content: None,
-            },
+                content: "B".repeat(3000), source_type: "note".into(), inject_content: None, ..Default::default() },
         ];
         allocate_budget(&mut results, 2000);
 
@@ -435,12 +617,10 @@ mod tests {
         let mut results = vec![
             SearchResult {
                 item_id: "a".into(), score: 0.0, title: "A".into(),
-                content: "A".repeat(3000), source_type: "note".into(), inject_content: None,
-            },
+                content: "A".repeat(3000), source_type: "note".into(), inject_content: None, ..Default::default() },
             SearchResult {
                 item_id: "b".into(), score: 0.0, title: "B".into(),
-                content: "B".repeat(3000), source_type: "note".into(), inject_content: None,
-            },
+                content: "B".repeat(3000), source_type: "note".into(), inject_content: None, ..Default::default() },
         ];
         allocate_budget(&mut results, 2000);
         // Equal distribution when scores are 0
@@ -465,8 +645,8 @@ mod tests {
         idx.add(&[0.0, 1.0], VectorMeta { item_id: "far".into(), chunk_idx: 0, level: 2, section_idx: 0 }).unwrap();
 
         let mut results = vec![
-            SearchResult { item_id: "far".into(),   score: 0.9, title: "Far".into(),   content: "c".into(), source_type: "note".into(), inject_content: None },
-            SearchResult { item_id: "close".into(), score: 0.5, title: "Close".into(), content: "c".into(), source_type: "note".into(), inject_content: None },
+            SearchResult { item_id: "far".into(),   score: 0.9, title: "Far".into(),   content: "c".into(), source_type: "note".into(), inject_content: None, ..Default::default() },
+            SearchResult { item_id: "close".into(), score: 0.5, title: "Close".into(), content: "c".into(), source_type: "note".into(), inject_content: None, ..Default::default() },
         ];
 
         rerank(&[1.0, 0.0], &mut results, &idx);
@@ -479,8 +659,8 @@ mod tests {
 
         let idx = VectorIndex::new(2).unwrap();
         let mut results = vec![
-            SearchResult { item_id: "a".into(), score: 0.8, title: "A".into(), content: "c".into(), source_type: "note".into(), inject_content: None },
-            SearchResult { item_id: "b".into(), score: 0.3, title: "B".into(), content: "c".into(), source_type: "note".into(), inject_content: None },
+            SearchResult { item_id: "a".into(), score: 0.8, title: "A".into(), content: "c".into(), source_type: "note".into(), ..Default::default() },
+            SearchResult { item_id: "b".into(), score: 0.3, title: "B".into(), content: "c".into(), source_type: "note".into(), ..Default::default() },
         ];
         rerank(&[1.0, 0.0], &mut results, &idx);
         assert!(results[0].score >= results[1].score);
@@ -492,6 +672,8 @@ mod tests {
         assert_eq!(p.top_k, 5);
         assert_eq!(p.initial_k, 25);   // 5*5=25, in [20,100]
         assert_eq!(p.intermediate_k, 10); // 5*2=10, in [5,40]
+        // per reviewer S2：通用 search 默认不启用 J3 阈值，保持 W2 前行为契约
+        assert_eq!(p.min_score, None);
 
         let p2 = SearchParams::with_defaults(1);
         assert_eq!(p2.initial_k, 20);  // min clamp
@@ -500,6 +682,46 @@ mod tests {
         let p3 = SearchParams::with_defaults(30);
         assert_eq!(p3.initial_k, 100); // max clamp
         assert_eq!(p3.intermediate_k, 40); // max clamp
+    }
+
+    // ── J3 tests（per spec §J3 + reviewer S2 路径分离）──────────────
+
+    #[test]
+    fn min_score_filter_keeps_above_threshold() {
+        // 模拟 vecs.search 返回 [0.50, 0.70, 0.85]
+        let raw: Vec<(String, f32)> = vec![
+            ("a".into(), 0.50),
+            ("b".into(), 0.70),
+            ("c".into(), 0.85),
+        ];
+        let kept_065: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.65).cloned().collect();
+        assert_eq!(kept_065.len(), 2, "0.65 阈值应保留 2 个 (0.70 + 0.85)");
+        assert_eq!(kept_065[0].0, "b");
+        assert_eq!(kept_065[1].0, "c");
+
+        let kept_078: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.78).cloned().collect();
+        assert_eq!(kept_078.len(), 1, "0.78 阈值应保留 1 个 (0.85)");
+
+        let kept_055: Vec<_> = raw.iter().filter(|(_, s)| *s >= 0.55).cloned().collect();
+        assert_eq!(kept_055.len(), 2, "0.55 应保留 0.70 + 0.85（不含 0.50）");
+    }
+
+    #[test]
+    fn rag_defaults_enable_065_threshold() {
+        // chat 路径默认走 RAG 阈值（0.65）— J3 仅对 RAG 生效，通用 search 不变
+        let rag = SearchParams::with_defaults_for_rag(5);
+        assert_eq!(rag.min_score, Some(0.65));
+        assert_eq!(rag.top_k, 5);
+        assert_eq!(rag.initial_k, 25);  // 与通用版同构
+    }
+
+    #[test]
+    fn min_score_threshold_curve_documented_in_spec() {
+        // 锁住吴师兄文章给出的曲线值，避免有人未读 spec 误改默认
+        let rag = SearchParams::with_defaults_for_rag(5);
+        assert_eq!(rag.min_score, Some(0.65), "RAG 默认 0.65（保守端，召回优先）");
+        // 0.72 是吴师兄推荐的"精度优先"档，未来 Settings 提供
+        // 0.78 开始漏边缘 case，仅极端精度场景用
     }
 
     // #9: search_with_context 三阶段管道（有 Reranker）

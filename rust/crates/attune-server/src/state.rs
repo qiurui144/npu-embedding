@@ -8,6 +8,7 @@ use attune_core::clusterer::ClusterSnapshot;
 use attune_core::embed::{EmbeddingProvider, OllamaProvider};
 use attune_core::index::FulltextIndex;
 use attune_core::llm::{LlmProvider, OllamaLlmProvider, OpenAiLlmProvider};
+use attune_core::resource_governor::{global_registry, TaskKind};
 use attune_core::tag_index::TagIndex;
 use attune_core::taxonomy::Taxonomy;
 use attune_core::vault::Vault;
@@ -58,11 +59,43 @@ pub struct AppState {
     pub engines_initialized: AtomicBool,
     /// 防止重复启动 SkillEvolver 后台线程
     pub evolve_worker_running: AtomicBool,
+    /// 防止重复启动 MemoryConsolidator 后台线程（A1，2026-04-27）
+    pub memory_consolidator_running: AtomicBool,
     pub search_cache: Mutex<LruCache<u64, CachedSearch>>,
+    /// Sprint 1 Phase B: project recommendation broadcast channel.
+    /// upload.rs / chat.rs 收到信号后 send；ws.rs subscribe 推送给前端。
+    pub recommendation_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Sprint 2: 启动时加载的 plugins（attune-pro / 用户 / 社区）
+    pub plugin_registry: std::sync::Arc<attune_core::plugin_registry::PluginRegistry>,
 }
 
 impl AppState {
     pub fn new(vault: Vault, require_auth: bool) -> Self {
+        let (recommendation_tx, _rx) = tokio::sync::broadcast::channel::<serde_json::Value>(64);
+        let plugin_registry = match attune_core::plugin_registry::PluginRegistry::default_plugins_dir() {
+            Ok(dir) => match attune_core::plugin_registry::PluginRegistry::scan(&dir) {
+                Ok((reg, errs)) => {
+                    tracing::info!(
+                        "loaded {} plugins, {} workflows from {}",
+                        reg.plugins().count(),
+                        reg.workflows().len(),
+                        dir.display()
+                    );
+                    for e in &errs {
+                        tracing::warn!("plugin load error: {}", e);
+                    }
+                    std::sync::Arc::new(reg)
+                }
+                Err(e) => {
+                    tracing::warn!("plugin scan failed: {}", e);
+                    std::sync::Arc::new(attune_core::plugin_registry::PluginRegistry::new())
+                }
+            },
+            Err(e) => {
+                tracing::warn!("cannot resolve plugin dir: {}", e);
+                std::sync::Arc::new(attune_core::plugin_registry::PluginRegistry::new())
+            }
+        };
         Self {
             vault: Mutex::new(vault),
             fulltext: Mutex::new(None),
@@ -80,12 +113,15 @@ impl AppState {
             classify_worker_running: AtomicBool::new(false),
             rescan_worker_running: AtomicBool::new(false),
             evolve_worker_running: AtomicBool::new(false),
+            memory_consolidator_running: AtomicBool::new(false),
             engines_initialized: AtomicBool::new(false),
             search_cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(SEARCH_CACHE_CAPACITY).unwrap()
+                NonZeroUsize::new(SEARCH_CACHE_CAPACITY).expect("SEARCH_CACHE_CAPACITY is non-zero const")
             )),
             // 启动时检测一次硬件，后续复用（避免每次 GET/PATCH 都同步读 /proc 等）
             hardware: attune_core::platform::HardwareProfile::detect(),
+            recommendation_tx,
+            plugin_registry,
         }
     }
 
@@ -97,6 +133,17 @@ impl AppState {
             .is_err()
         {
             return; // 已初始化，跳过
+        }
+
+        // v0.6.0-rc.4: 按 region 自动设 HF_ENDPOINT，让 ONNX 模型从国内镜像下载
+        // hf-hub crate 读 HF_ENDPOINT 环境变量；未设走默认 huggingface.co
+        if std::env::var_os("HF_ENDPOINT").is_none() {
+            let region = attune_core::platform::detect_region();
+            let endpoint = region.hf_endpoint();
+            // SAFETY: 启动时一次性设置（init_search_engines 由 compare_exchange 保证幂等）
+            // 不会有并发 set_var 竞争。
+            unsafe { std::env::set_var("HF_ENDPOINT", endpoint) };
+            tracing::info!("Region detected: {} → HF_ENDPOINT={endpoint}", region.label());
         }
         // Fulltext index (persistent on disk)
         {
@@ -147,19 +194,30 @@ impl AppState {
             };
         }
 
-        // Try ONNX embedding first; fall back to Ollama if model not available
+        // Embedding 提供者选择：
+        // - 默认 ONNX (Xenova/bge-m3 quantized, CPU) — 自包含、零外部依赖
+        // - ATTUNE_EMBEDDING_BACKEND=ollama 强制走 Ollama bge-m3 (full precision, GPU 可用)
+        //   benchmark / Pro 部署用，质量更好但需要 Ollama 运行
         if let Ok(mut guard) = self.embedding.lock() {
-            let provider: Arc<dyn EmbeddingProvider> =
+            let prefer_ollama = std::env::var("ATTUNE_EMBEDDING_BACKEND")
+                .map(|v| v.eq_ignore_ascii_case("ollama"))
+                .unwrap_or(false);
+
+            let provider: Arc<dyn EmbeddingProvider> = if prefer_ollama {
+                tracing::info!("Embedding: Ollama bge-m3 (ATTUNE_EMBEDDING_BACKEND=ollama)");
+                Arc::new(OllamaProvider::default())
+            } else {
                 match attune_core::infer::embedding::OrtEmbeddingProvider::qwen3_embedding_0_6b() {
                     Ok(p) => {
-                        tracing::info!("Embedding: OrtEmbeddingProvider (Qwen3-Embedding-0.6B)");
+                        tracing::info!("Embedding: OrtEmbeddingProvider (Xenova/bge-m3 ONNX quantized)");
                         Arc::new(p)
                     }
                     Err(e) => {
                         tracing::info!("ONNX embedding unavailable ({e}), falling back to Ollama bge-m3");
                         Arc::new(OllamaProvider::default())
                     }
-                };
+                }
+            };
             *guard = Some(provider);
         }
 
@@ -176,44 +234,65 @@ impl AppState {
             }
         }
 
-        // LLM 三级优先级：1. 配置文件 llm.endpoint  2. Ollama 自动探测  3. 无 LLM
+        // v0.6.0-rc.4: 按 tier 后台拉取 whisper ggml 模型（不阻塞启动）
+        // 失败仅 warn — 用户上传音频时若 detect_asr_backend 仍返 None 会在 ai_stack
+        // status note 给出再次下载提示。
+        let tier = attune_core::platform::classify_hardware(&self.hardware);
+        if tier.is_supported() {
+            std::thread::spawn(move || {
+                match attune_core::asr::fetch_for_tier(tier) {
+                    Ok(path) => {
+                        tracing::info!(
+                            "ASR ggml ready at {} (tier={})",
+                            path.display(),
+                            tier.label()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("ASR ggml auto-fetch failed (tier={}): {e}", tier.label());
+                    }
+                }
+            });
+        }
+
+        // LLM 四级优先级：1. 配置文件 llm.endpoint（OpenAI-compatible）
+        //                  2. provider=local + 明确指定 model → OllamaLlmProvider::with_model
+        //                  3. Ollama 自动探测（PREFERRED_MODELS 列表）
+        //                  4. 无 LLM（Chat 功能禁用）
         let llm_result: Option<Arc<dyn LlmProvider>> = {
-            // 级别 1：读取 settings 中的 llm 配置
             let configured_llm = {
                 let vault_guard = self.vault.lock().unwrap_or_else(|e| e.into_inner());
                 vault_guard.store().get_meta("app_settings").ok().flatten()
                     .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
                     .and_then(|settings| {
-                        let endpoint = settings.get("llm")
-                            .and_then(|l| l.get("endpoint"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let api_key = settings.get("llm")
-                            .and_then(|l| l.get("api_key"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let model = settings.get("llm")
-                            .and_then(|l| l.get("model"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("gpt-4o-mini")
-                            .to_string();
-                        endpoint.map(|ep| {
+                        let llm = settings.get("llm")?;
+                        let endpoint = llm.get("endpoint").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let api_key = llm.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let model = llm.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let provider = llm.get("provider").and_then(|v| v.as_str()).unwrap_or("local");
+
+                        if let Some(ep) = endpoint {
+                            // 级别 1：明确配置了 endpoint → OpenAI-compatible（含 Qwen/DeepSeek 等）
                             tracing::info!("LLM: using configured endpoint {ep}");
-                            Arc::new(OpenAiLlmProvider::new(&ep, &api_key, &model))
-                                as Arc<dyn LlmProvider>
-                        })
+                            Some(Arc::new(OpenAiLlmProvider::new(&ep, &api_key, &model)) as Arc<dyn LlmProvider>)
+                        } else if provider == "local" && !model.is_empty() {
+                            // 级别 2：local provider + 明确指定 model → Ollama with_model
+                            tracing::info!("LLM: using Ollama with configured model {model}");
+                            Some(Arc::new(OllamaLlmProvider::with_model(&model)) as Arc<dyn LlmProvider>)
+                        } else {
+                            None
+                        }
                     })
             };
 
-            // 级别 2：Ollama 自动探测
+            // 级别 3：Ollama 自动探测
             configured_llm.or_else(|| {
                 OllamaLlmProvider::auto_detect().ok().map(|llm| {
                     tracing::info!("LLM: using Ollama auto-detect");
                     Arc::new(llm) as Arc<dyn LlmProvider>
                 })
             })
-            // 级别 3：None（Chat 功能禁用）
+            // 级别 4：None（Chat 功能禁用）
         };
 
         if let Some(llm_arc) = llm_result {
@@ -391,6 +470,10 @@ impl AppState {
             return;
         }
 
+        // H1：classify worker 走 LLM 分类，复用 AiAnnotator 档位（无 LLM 速率限制，
+        // 但 CPU/RAM 受治理；如未来要为分类单独建档可加 TaskKind::Classify）。
+        let governor = global_registry().register(TaskKind::AiAnnotator);
+
         std::thread::spawn(move || {
             tracing::info!("Classify worker started");
             loop {
@@ -402,10 +485,16 @@ impl AppState {
                     }
                 }
 
+                if !governor.should_run() {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+
                 match state.drain_classify_batch(5) {
                     Ok(0) => std::thread::sleep(std::time::Duration::from_secs(5)),
                     Ok(n) => {
                         tracing::info!("Classified {} items", n);
+                        std::thread::sleep(governor.after_work());
                     }
                     Err(e) => {
                         tracing::warn!("Classify worker error: {}", e);
@@ -428,6 +517,10 @@ impl AppState {
             return;
         }
 
+        // H1：rescan = FileScanner 类，受治理；30 分钟周期任务，单次扫描期间也会
+        // 在每个目录 dir 之间 check should_run 以便快速响应 Pause。
+        let governor = global_registry().register(TaskKind::FileScanner);
+
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(30 * 60)); // 30 minutes
@@ -447,6 +540,10 @@ impl AppState {
                 };
 
                 for dir in &dirs {
+                    // H1：每个目录都给 governor 一个机会响应 Pause / 超 budget
+                    while !governor.should_run() {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
                     if dir.path.is_empty() || dir.path.starts_with("webdav:") {
                         continue;
                     }
@@ -488,6 +585,8 @@ impl AppState {
                         }
                         Err(e) => tracing::warn!("Rescan {} failed: {}", dir.path, e),
                     }
+                    drop(vault);
+                    std::thread::sleep(governor.after_work());
                 }
             }
             state.rescan_worker_running.store(false, Ordering::SeqCst);
@@ -504,6 +603,10 @@ impl AppState {
             tracing::debug!("Queue worker already running, skipping");
             return;
         }
+
+        // H1：embedding 队列受 EmbeddingQueue 治理（默认 Balanced 25% CPU / 1GB RAM）。
+        // 此 worker 是 attune-server 生产路径，比 attune-core::queue::QueueWorker 多 flush 逻辑。
+        let governor = global_registry().register(TaskKind::EmbeddingQueue);
 
         std::thread::spawn(move || {
             tracing::info!("Queue worker started");
@@ -525,6 +628,12 @@ impl AppState {
                     break;
                 }
 
+                // H1：超 budget 或全局 pause 时短 sleep
+                if !governor.should_run() {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                }
+
                 // 检查 embedding + vectors + fulltext 是否就绪
                 let embedding = state.embedding.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let vectors_ready = state.vectors.lock().unwrap_or_else(|e| e.into_inner()).is_some();
@@ -534,7 +643,7 @@ impl AppState {
                     std::thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                let embedding = embedding.unwrap();
+                let embedding = embedding.expect("is_none() checked above");
 
                 if !embedding.is_available() {
                     std::thread::sleep(POLL_INTERVAL);
@@ -656,6 +765,9 @@ impl AppState {
                 }
 
                 tracing::debug!("Queue worker processed {} embed tasks", embed_tasks.len());
+
+                // H1：批次完成后退让，让 governor 决定下次 sleep 时长
+                std::thread::sleep(governor.after_work());
             }
 
             // 退出时重置标志 + 最后一次 flush
@@ -690,6 +802,11 @@ impl AppState {
             return;
         }
 
+        // H1：SkillEvolution 受治理 + LLM 速率限制（默认 Balanced 10 calls/h）。
+        // 4 小时检查一次本身已是低频，但仍接入 governor 以便：
+        // (1) 全局 Pause 立即生效  (2) 切档时 LLM 配额自动调整
+        let governor = global_registry().register(TaskKind::SkillEvolution);
+
         std::thread::spawn(move || {
             tracing::info!("Skill evolver started (runs every 4h or at {} signals)",
                 attune_core::skill_evolution::EVOLVE_THRESHOLD);
@@ -705,6 +822,11 @@ impl AppState {
                 };
                 if !vault_unlocked {
                     break;
+                }
+
+                // H1：被 Pause / 超 budget 时跳过本周期（4h 后再试）
+                if !governor.should_run() {
+                    continue;
                 }
 
                 let llm = match state.llm.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned() {
@@ -728,6 +850,12 @@ impl AppState {
                     // vault 在此处 drop，释放锁
                 };
 
+                // H1：LLM 配额检查
+                if !governor.allow_llm_call() {
+                    tracing::info!("Skill evolver LLM quota exceeded (per-hour cap), skipping cycle");
+                    continue;
+                }
+
                 // Phase 2（无锁）：LLM 调用，可能耗时 15s+
                 let expansions = match attune_core::skill_evolution::generate_expansions(llm.as_ref(), &signals) {
                     Ok(e) => e,
@@ -750,6 +878,132 @@ impl AppState {
 
             state.evolve_worker_running.store(false, Ordering::SeqCst);
             tracing::info!("Skill evolver stopped (vault locked)");
+        });
+    }
+
+    /// A1：启动 Memory Consolidator 后台 worker（2026-04-27）。
+    ///
+    /// 每 6 小时跑一次：扫 chunk_summaries 按天聚合 → LLM 总结成 episodic memory。
+    /// 三阶段锁释放（与 skill_evolver 同构），每周期最多 4 个 bundle / 4 次 LLM 调用。
+    /// 受 H1 [`TaskKind::MemoryConsolidation`] governor 治理 + LLM 配额限制。
+    pub fn start_memory_consolidator(state: std::sync::Arc<AppState>) {
+        // 需要 LLM 才能运行
+        if state.llm.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+            return;
+        }
+
+        if state.memory_consolidator_running.compare_exchange(
+            false, true, Ordering::SeqCst, Ordering::SeqCst,
+        ).is_err() {
+            tracing::debug!("Memory consolidator already running, skipping");
+            return;
+        }
+
+        let governor = global_registry().register(TaskKind::MemoryConsolidation);
+
+        std::thread::spawn(move || {
+            tracing::info!("Memory consolidator started (runs every 6h)");
+            const CYCLE: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+            loop {
+                std::thread::sleep(CYCLE);
+
+                let vault_unlocked = {
+                    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
+                    matches!(vault.state(), attune_core::vault::VaultState::Unlocked)
+                };
+                if !vault_unlocked {
+                    break;
+                }
+
+                if !governor.should_run() {
+                    continue;
+                }
+
+                let llm = match state.llm.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned() {
+                    Some(l) => l,
+                    None => break,
+                };
+
+                // 用 std time 避免引入 chrono 到 attune-server。SystemTime 之后转 secs。
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                // I4：Phase 1 同步记下 LLM model 名，避免 Phase 3 写入时与实际生成 LLM 不一致。
+                let model_name = llm.model_name().to_string();
+
+                // Phase 1（持锁）：prepare bundles。Phase 1 dek 不带出锁外，
+                // Phase 3 重新取 dek 避免使用已注销的密钥（S2 修复）。
+                let bundles = {
+                    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
+                    let dek = match vault.dek_db() {
+                        Ok(d) => d,
+                        Err(_) => break,
+                    };
+                    match attune_core::memory_consolidation::prepare_consolidation_cycle(
+                        vault.store(), &dek, now_secs,
+                    ) {
+                        Ok(Some(b)) => Some(b),
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!("Memory consolidator prepare error: {}", e);
+                            None
+                        }
+                    }
+                };
+                let Some(bundles) = bundles else { continue };
+
+                // Phase 2（无锁）：每 bundle 单独 check 配额 + LLM 调用（S1 修复）。
+                // 配额耗尽时剩余 bundle 留 None，下周期 INSERT OR IGNORE 保证幂等不丢失。
+                let mut summaries: Vec<Option<String>> = Vec::with_capacity(bundles.len());
+                let mut deferred = 0usize;
+                for bundle in &bundles {
+                    if !governor.allow_llm_call() {
+                        deferred = bundles.len() - summaries.len();
+                        for _ in 0..deferred { summaries.push(None); }
+                        break;
+                    }
+                    summaries.push(
+                        attune_core::memory_consolidation::generate_one_episodic_memory(
+                            llm.as_ref(), bundle,
+                        ),
+                    );
+                }
+                if deferred > 0 {
+                    tracing::info!(
+                        "Memory consolidator LLM quota exhausted mid-cycle, {} bundle(s) deferred",
+                        deferred
+                    );
+                }
+
+                // Phase 3（持锁）：幂等写 memories — 复查 vault 状态 + 重新取 dek（S2 修复）
+                {
+                    let vault = state.vault.lock().unwrap_or_else(|e| e.into_inner());
+                    if !matches!(vault.state(), attune_core::vault::VaultState::Unlocked) {
+                        tracing::info!(
+                            "Vault locked during consolidation, discarding {} bundle result(s)",
+                            bundles.len()
+                        );
+                        break;
+                    }
+                    let dek = match vault.dek_db() {
+                        Ok(d) => d,
+                        Err(_) => break,
+                    };
+                    match attune_core::memory_consolidation::apply_consolidation_result(
+                        vault.store(), &dek, &bundles, &summaries, &model_name, now_secs,
+                    ) {
+                        Ok(0) => tracing::debug!("Memory consolidator: no new memories"),
+                        Ok(n) => tracing::info!("Memory consolidator: {} new episodic memories", n),
+                        Err(e) => tracing::warn!("Memory consolidator apply error: {}", e),
+                    }
+                }
+            }
+
+            state.memory_consolidator_running.store(false, Ordering::SeqCst);
+            tracing::info!("Memory consolidator stopped (vault locked)");
         });
     }
 

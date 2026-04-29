@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::embed::EmbeddingProvider;
 use crate::error::{Result, VaultError};
 use crate::index::FulltextIndex;
+use crate::resource_governor::{global_registry, TaskKind};
 use crate::store::{QueueTask, Store};
 use crate::vectors::{VectorIndex, VectorMeta};
 
@@ -24,6 +25,12 @@ pub struct QueueWorker {
     running: Arc<AtomicBool>,
 }
 
+impl Default for QueueWorker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueueWorker {
     pub fn new() -> Self {
         Self {
@@ -32,6 +39,10 @@ impl QueueWorker {
     }
 
     /// 启动 worker（在后台线程运行）
+    ///
+    /// H1：在 [`global_registry`] 注册 [`TaskKind::EmbeddingQueue`] governor。
+    /// 每次循环顶部 check `should_run`，超 budget 或全局 pause 时短 sleep；
+    /// 处理一批后用 `after_work` 决定下次 sleep（throttle 退让）。
     pub fn start(
         &self,
         store: Arc<Mutex<Store>>,
@@ -41,13 +52,23 @@ impl QueueWorker {
     ) -> std::thread::JoinHandle<()> {
         self.running.store(true, Ordering::SeqCst);
         let running = self.running.clone();
+        let governor = global_registry().register(TaskKind::EmbeddingQueue);
 
         std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
+                if !governor.should_run() {
+                    // 被全局 pause 或本任务超 CPU budget — 短 sleep 后重试
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
                 match Self::process_batch(&store, &embedding, &vectors, &fulltext) {
                     Ok(processed) => {
                         if processed == 0 {
+                            // 队列空 — 走原 polling 间隔，不需要 throttle
                             std::thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+                        } else {
+                            // 处理了任务 — 让 governor 决定退让时长
+                            std::thread::sleep(governor.after_work());
                         }
                     }
                     Err(e) => {

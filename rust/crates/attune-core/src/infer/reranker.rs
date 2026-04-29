@@ -40,19 +40,25 @@ impl OrtRerankProvider {
     ///   `jinaai/jina-reranker-v2-base-multilingual` 可通过 env var
     ///   `ATTUNE_RERANKER_MODEL` 切换启用。
     pub fn bge_reranker_v2_m3() -> Result<Self> {
+        // v0.6 Phase B fix：默认切到 BAAI 官方 bge-reranker-base ONNX。
+        // 原默认 Xenova/bge-reranker-base 量化版有 known issue：某些中文长文档触发
+        // ONNX `Expand node invalid shape` 错误（见 server log），让 reranker 永久
+        // 退化到 RRF 排序，是法律 / 中文检索的隐藏 ranking 杀手。
+        // BAAI 官方 model.onnx (330MB full precision) 不量化，没这个 bug。
+        // 也提供 jina-v2-multilingual 作为多语言可选（中文支持更好）。
         let (repo, file) = match std::env::var("ATTUNE_RERANKER_MODEL").as_deref() {
             Ok("jina-v2-multilingual") => (
                 "jinaai/jina-reranker-v2-base-multilingual",
                 "onnx/model_quantized.onnx",
             ),
-            Ok("bge-base-official") => (
-                "BAAI/bge-reranker-base",
-                "onnx/model.onnx",
-            ),
-            _ => (
-                // 默认：Xenova 镜像的量化版 bge-reranker-base（稳定且小）
+            Ok("xenova-quantized") => (
                 "Xenova/bge-reranker-base",
                 "onnx/model_quantized.onnx",
+            ),
+            _ => (
+                // 默认：BAAI 官方 ONNX (full precision, 330MB) — 稳定，无 Expand bug
+                "BAAI/bge-reranker-base",
+                "onnx/model.onnx",
             ),
         };
         let (model_path, tokenizer_path) = super::model_store::ensure_models(

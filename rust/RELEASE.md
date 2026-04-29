@@ -1,5 +1,271 @@
 # attune 版本记录
 
+## v0.6.0-rc.5（2026-04-28）— 三赛道 PRO + 5 维度满分
+
+**关键交付**：检索 + 答案双 PRO 级，跨域污染防御、PII 脱敏、证据流端到端全部上线。
+
+### Benchmark 数字
+- Scen A 法律 (lawcontrol): Hit@10=**0.80**, MRR=0.50 ✅ PRO
+- Scen B Rust (rust-book): Hit@10=**1.00**, MRR=**1.00** ✅ PRO 满分
+- Scen C 中文八股 (cs-notes): Hit@10=**1.00**, MRR=**1.00** ✅ PRO 满分
+- Lawcontrol golden_qa 5 维度: **25.00/25** (10/10 excellent，vs baseline +39%)
+
+### Phase A.5 — PII 脱敏 + 隐私分级
+- `attune-core::pii` 新模块：12 类格式化 PII（含 ISO 7064 身份证 / Luhn 信用卡 / 8 家 API key）+ 用户自定义词典 + 可逆 placeholder
+- `attune-core::store::audit` + `routes::audit`：出网审计日志 + CSV 导出
+- `items.privacy_tier` 字段 + per-file 🔒 标记 (L0/L1/L3)
+- vertical plugin 在 `plugin.yaml::pii_patterns` 声明行业 PII（案号 / 病历号 / 专利号）
+
+### Phase B — 双赛道 benchmark
+- `scripts/parse-legal-dump.py`: lawcontrol PG dump → 10,677 .md 文件
+- `scripts/bench-orchestrator.sh`: 一站式 vault setup + bind + index + query
+- `scripts/run-final-eval.py`: 15 题 retrieval + 3 题 evidence flow 验证
+- `attune-pro/law-pro/run_golden_qa`: 10 case × 5 维度评分
+- `docs/benchmarks/dual-track-baseline.md`: 5 轮演化报告
+
+### F-Pro — 跨域污染防御 4 stage
+- Stage 1: `items.corpus_domain` + `bound_dirs.corpus_domain` 字段
+- Stage 2: chunk text 头部注入 `[领域: legal]` prefix
+- Stage 3: `CROSS_DOMAIN_PENALTY = 0.4`（query domain ≠ doc domain）
+- Stage 4: `detect_query_domain` 关键词 4 domain × 12-30 词（零 LLM 调用）
+- 效果：法律 0.60 → 0.80, Rust MRR 0.87 → 1.00
+
+### 证据流端到端
+- `chat.rs` route 4 处数据丢失 bug 修复（breadcrumb / chunk_offset / confidence）
+- citation breadcrumb fallback 到 [item.title]
+- `parse_confidence` + `strip_confidence_marker` 在 chat route 接入
+
+### Embedding / LLM env vars
+- `ATTUNE_EMBEDDING_BACKEND=ollama`：3.6× 提速 + F16 全精度
+- `ATTUNE_CHAT_MODEL=<name>`：覆盖自动探测
+- 默认 reranker 切 BAAI/bge-reranker-base 官方 ONNX（修 Xenova Expand bug）
+
+### Schema migrations（幂等，自动）
+- `chunk_breadcrumbs` 加密 + `embed_queue.task_type` + `items.privacy_tier/corpus_domain` + `bound_dirs.corpus_domain`
+
+### 测试 / 文档
+- attune-core lib: **537+ tests**
+- 双语 release notes: `docs/v0.6-release-notes.md` + `.zh.md`
+- 文档站章节: 见 wiki.your-company.com/attune
+
+### 已知限制（v0.7 解决）
+- L3 LLM 语义脱敏（trait scaffold 在 `pii::ner`）
+- Settings → Privacy 完整 UI（当前是只读+导出）
+- 122 routes 渐进迁移 `routes::errors` helper
+- Phase D VLM 28 golden cases
+- macOS
+
+## 开发中
+
+## W3 Batch C: K2 Parse Golden Set Baseline (2026-04-27)
+
+12-week 战略 v4 W3 F-P0c batch C **收官**。建立 chunker / parser 质量门槛，防止后续 chunker 改动悄悄回归。来源：Readwise Reader 200 页 parsing benchmark + CI 95% 阈值方法论（per ACKNOWLEDGMENTS K 系列）。
+
+### K2 Parse Golden Set baseline（5 fixtures）
+- `tests/fixtures/parse_corpus/manifest.yaml` — 5 fixture 描述（id / file / source / pinned_version / license + expected: title_contains / min_text_chars / must_contain_phrases / section_count_min / section_paths_must_include）
+- 5 个 markdown fixture（覆盖 4 个领域 + 双语）：
+  - 001 rust-lang/book ch4 'What Is Ownership' (en, MIT/Apache-2.0)
+  - 002 中华人民共和国民法典节选 (zh, 公开法律文本)
+  - 003 tech blog post — microservices vs monolith (en, attune-internal)
+  - 004 news article — EU AI Act (en, attune-internal)
+  - 005 academic paper review — Attention Is All You Need (en, attune-internal)
+- `tests/parse_golden_set_regression.rs`：8 测试（manifest loads + files exist + min_rate gate + 5 per-fixture pass）
+- Regression gate：`min_pass_rate=1.0`（5 篇必须全过，扩 200 时降到 0.95）
+
+### 与 J6 W4 benchmark 的关系
+- J6 测**检索质量**（query → expected hits），用 `rust/tests/golden/queries.json`
+- K2 测**parser/chunker 质量**（page → expected sections），用 `tests/fixtures/parse_corpus/`
+- 两个 golden set 同期跑，构成 attune 完整质量基线
+
+### W3 batch C 不做（推到 W4 / W5-6）
+- ❌ 200 篇真实页面采集 — 需 1-2 天 corpus 工作（W4）
+- ❌ GitHub Actions CI 集成（W4 与 J6 一起接入 benchmark CI）
+- ❌ Per-language fixture 矩阵扩展（当前 5 篇含 1 zh + 4 en，足够 baseline）
+- ❌ PDF parsing fixture（独立 golden set，W5-6）
+- ❌ Readability.js style content extraction baseline（阻塞 G3，W5-6）
+
+### W3 全量收官（A + B + C）
+| Batch | Commit | 主交付 | 测试 +N |
+|-------|--------|-------|---------|
+| A `28bd691` | F2 placeholder 关闭 + C1 web cache + F1 + F4 | +16 lib + 7 集成 |
+| B `674cf55` | G1 浏览信号全栈 + G5 隐私面板 + F3 E2E | +7 lib + 5 集成 |
+| C 本次 | K2 Parse Golden Set | +8 集成 |
+| **W3 总计** | 3 commits | +23 lib + **20 集成** |
+
+attune-core lib 测试 415 (W2 末) → **438**（+23），集成测试套件 3 → **6**（+governor + memory + rag_w2 + rag_w3_batch_a + rag_w3_batch_b + parse_golden_set）。
+
+## W3 Batch B: G1 + G2 + G5 + F3 (2026-04-27)
+
+12-week 战略 v4 Phase 1 W3 F-P0c batch B 全栈交付。**Chrome 扩展从"AI 对话捕获器"升级为"通用浏览状态知识源"** + 隐私控制面板 + W2 batch 1 followup F3 关闭。所有抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+### ⚠️ Breaking change — 升级 action required
+- Chrome 扩展 manifest 加 `<all_urls>` host_permission + `incognito: not_allowed` + 新 content script — **首次升级用户安装时 Chrome 会弹出权限重新授权对话框**（"读取所有网站数据"）。这是 G1 浏览捕获的硬要求；隐私默认完全 opt-out，需在扩展 popup → 浏览隐私 → 显式加 domain 才会捕获。
+- attune-server 新增 `browse_signals` 表 — 老 vault 升级时 schema 自动 IF NOT EXISTS 创建空表，无需操作。
+- attune-server 新增 `<incognito>` Chrome 扩展强制不加载 — 用户在 Chrome 设置启用了"在隐私窗口允许扩展"也会被拒绝（防御 content script JS 检查被绕过的攻击）。
+
+### 用户视角的影响
+- **新能力**：浏览任意网站时，停留 ≥3 分钟 + 滚动 ≥50% + 复制至少 1 次 → attune 自动记下"你在意什么"作为 SkillEvolver / Profile 的输入信号
+- **隐私默认零捕获**：装好后什么都不发生，必须显式 opt-in 每个 domain
+- **硬黑名单覆盖任何手动 opt-in**：银行 / 医疗 / 政府登录页 / 密码管理器永远不捕获
+- 数据全部本机加密存储（DEK + AES-GCM）— `url` / `title` 加密，`domain_hash` HMAC + pepper（W4 升级到 vault salt 派生）
+
+### G1 浏览信号捕获（后端 + 扩展全栈）
+- 新表 `browse_signals`：url/title DEK 加密 + domain_hash HMAC-SHA256(pepper, domain) + dwell/scroll/copy/visit + ts，带索引
+- `Store` API：record / list / count / clear_for_domain / clear_all
+- attune-server 路由 `/api/v1/browse_signals` 三 method（POST batch / GET diagnostics / DELETE）
+- Chrome 扩展 `extension/src/content/browse_capture.js`：visibilitychange dwell + IntersectionObserver scroll + copy 监听 + whitelist + HARD_BLACKLIST
+- 30 秒周期 flush + 失败重入队 + 500 上限保护（先裁尾老数据再 unshift 新失败批，per reviewer I4）
+- **隐私默认 opt-out**：用户必须在 popup 显式加 domain 才捕获。HARD_BLACKLIST 双层正则（hostname 银行/政府/密码管理器 + pathname /login //signin /password 等，per reviewer S2）
+- **Incognito 硬阻断**：`chrome.extension.inIncognitoContext` 显式检查（per reviewer S1）
+- 字段长度上限：URL ≤2048 / title ≤512 char，防恶意页面 1MB title 拖慢加密（per reviewer I3）
+
+### G2 高 engagement 评分
+- `is_high_engagement`：dwell ≥3 分钟 + scroll ≥50% + copy ≥1
+- W3 batch B 仅计数返回 `high_engagement`，不创建 placeholder item（避免无内容污染知识库）
+- W5-6 G3 引入 page extraction 后再 auto-bookmark with body
+
+### G5 隐私控制面板
+- 新组件 `extension/src/popup/Privacy.jsx`（Preact）
+- per-domain whitelist 增删 + 全局 Pause toggle + 已捕获计数 + 清除按钮（全清/per-domain）
+- "默认 opt-out / 数据仅本机 / 硬黑名单覆盖"三段式提示
+
+### F3 J5 secondary retrieval E2E（关闭 W2 batch 1 followup）
+- `tests/rag_w3_batch_b_integration.rs` 5 测试：高/低/默认 confidence + 中英 marker + serde 字段
+- 关闭 W2 batch 1 reviewer P2 #5 留的 followup
+
+### 遗留代码清理（per 用户 2026-04-27 要求"开源方案获取后做好遗留代码检查"）
+- W3 batch B 引入的 3 项 warning 全清零（chunker doc / dead write / store unused imports）
+- 删 `worker.js` 2 处 dev console.log
+- 累积老死代码 + Chrome 扩展 console.log 5+4 项记入 `tmp/w3-batch-b-followups.md` → W4 单独"代码卫生"批次
+
+### 工程
+- 测试：attune-core lib 431 → **438** (+7 browse_signals) + W3 batch B 集成 5 = +12 测试
+- attune-server lib: 3（零回归）
+- **R1 单轮 review**（W3 节奏紧）：reviewer 找 2 严重（incognito + HARD_BLACKLIST 误报）+ 4 重要 + 7 建议；本批次修 6 项必修（S1 / S2 / I1 / I3 / I4 / N4 / N6），其余进 followup
+
+### 不做（推到 W3 batch C / W4）
+- ❌ G3 页面内容抽取（Readability.js）— W5-6
+- ❌ G4 跨 session topic cluster — W7-8
+- ❌ G5 角色化预设白名单 — W7-8
+- ❌ Domain hash 完整 vault salt（当前用编译期 pepper）— W4
+- ❌ Chrome 扩展 console.log 全清 + DEBUG 守护 — W4
+- ❌ K2 Parse Golden Set — W3 batch C
+
+## W3 Batch A: F1 + F2 + F4 + C1 (2026-04-27)
+
+### ⚠️ Breaking change — schema migration
+- W3 batch A 末（commit `28bd691`）→ W3 末（含 R04 P0-1 加密 + R07 P0 migration）：
+  `chunk_breadcrumbs.breadcrumb_json TEXT` 列名改 `breadcrumb_enc BLOB` (DEK 加密)
+- 老 vault 升级时 `migrate_breadcrumbs_encrypt` 自动 DROP + 重建表
+- **老明文 breadcrumb 数据丢失**（acceptable — 下次 indexer ingest 自动 backfill 加密版本）
+- **首次升级后第一次 chat 引用：Citation.breadcrumb 可能为空**直到 indexer 重建（< 1 分钟）
+
+### 用户视角
+- **F2 关闭 W2 placeholder**：现在 chat 引用真带 chunk path（`产品手册 > 第三章 > 3.2 假期`）
+- **C1 web cache**：相同 query 30 天内自动复用，省 token + 加速
+
+12-week 战略 v4 Phase 1 W3 F-P0c batch A 后端深做。**关闭 W2 batch 1 的 Citation placeholder 状态** + 加 web search 缓存层 + 关键可观测性日志。所有抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+### F2 关闭 W2 batch 1 placeholder（核心）
+**之前**：`Citation.breadcrumb = Vec::new()` + `chunk_offset_* = None` 始终占位。
+**现在**：从 indexer 透传到 Citation 真值。
+
+- 新增 `chunk_breadcrumbs` sidecar 表（FK CASCADE + 软删除路径显式清理）
+- `Store::upsert_chunk_breadcrumbs_from_content` 在 indexer pipeline 4 个调用点全部接入：`routes/upload.rs` / `routes/ingest.rs` / `scanner.rs` / `scanner_webdav.rs`
+- `SearchResult` 加 `breadcrumb` / `chunk_offset_start/end` 字段（serde `skip_serializing_if` 保持 Chrome 扩展旧客户端兼容）
+- `search_with_context` 在 item 解密后查 sidecar 填充
+- `ChatEngine.chat()` 透传 SearchResult → Citation
+- **Known limitation (v1)**：当前 offset 是 sidecar 内累计 char count，不严格对齐原文 char index — 适合 item 顶层导航；W5+ 真正按行号映射回原文。前端 Reader 精确高亮请等 W5
+- `delete_item` (软删除) 同步清理 breadcrumbs，防止 stale data 透传
+
+### C1 Web search 本地缓存
+- 新增 `web_search_cache` 表：query_hash (SHA-256) 主键 + DEK 加密 query/results + 30 天默认 TTL
+- `Store::get_web_search_cached / put_web_search_cached / clear_web_search_cache / web_search_cache_count`
+- `ChatEngine.chat()` web fallback 路径：先查 cache miss 才发网络请求；fetch 后立即写 cache（含空结果 — TTL 自然失效）
+- 用户后续可在 Settings 清空 web 缓存（route 待 batch B 加）
+- **来源**：[吴师兄文章](https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw) §6 高频 query 缓存 + Readwise/Linkwarden "fetch 时快照"模式
+
+### F1 J5 二次检索可观测性
+chat.rs 加 `J5 F1` 前缀日志区分 fallback 召回更多 / no-op / 失败三类，便于线上诊断。
+
+### F4 RELEASE notes 同步
+W2 batch 1 placeholder 状态 → 标记 RESOLVED in W3 batch A（本批次）。
+
+### 工程
+- 测试：attune-core lib 415 → **431** (+16)，新增 W3 集成测试 7（共 18 集成）
+- **Two rounds of code review**：R1 找 2 严重 + 5 重要 + 6 建议（10 项必修，全修）；R2 找 P0-1 软删除漏 breadcrumbs（修，加 `soft_delete_clears_breadcrumbs` 产品安全测试）
+
+### W3 batch A 不做（推到 batch B/C）
+- ❌ G1 / G5 Chrome 扩展浏览捕获 — 全栈跨会话深做
+- ❌ K2 Parse Golden Set 200 篇 — 语料采集 + CI 流水线
+- ❌ J5 secondary retrieval E2E 测试（F3 推到 batch B 与 ChatEngine 完整构造一起做）
+- ❌ Cache GC daemon / 空结果短 TTL / scanner 增量 file_hash 短路 — W4 backlog
+
+## W2 Batch 1: J1 + J3 + J5 + B1 backend (2026-04-27)
+
+12-week 战略 v4 Phase 1 W2，**第一波用户感知 RAG 质量**改造。配合 6 维度开源生态调研后明确"抄 vs 自研"边界，全部抄袭点登记到 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+### J1 Chunk 面包屑路径前缀
+- `attune_core::chunker::extract_sections_with_path` 新增；输出 `SectionWithPath { section_idx, path, content }`，path 是文档根开始的标题层级
+- `with_breadcrumb_prefix()` 把 path 用 Markdown blockquote `> A > B > C` 注入到 chunk 头部
+- 旧 `extract_sections` 改为 wrapper 调新版（消除重复实现）
+- Markdown 标题识别扩展到 H1-H6（CommonMark 标准）
+- **来源**：[吴师兄文章](https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw) §1
+
+### J3 召回 cosine 阈值显式化
+- `SearchParams::min_score: Option<f32>` 字段
+- **`with_defaults` 默认 None**（保持 W2 前 Chrome 扩展 `/api/v1/search` 契约）
+- **`with_defaults_for_rag` 默认 0.65**（chat 主路径专用，per 吴师兄经验值）
+- vector 结果在 RRF 融合**之前**按 min_score 过滤；BM25 不过滤（score 不同尺度）
+- **来源**：吴师兄文章 §2 0.65/0.72/0.78 三档曲线
+
+### J5 强约束 Prompt + 置信度 + 二次检索
+- `build_rag_system_prompt` 重写：明确禁用模糊措辞（"可能"/"大概"/"建议咨询"）+ 引用必带来源 + 末尾输出【置信度: N/5】
+- `parse_confidence(response: &str) -> u8`：解析末尾 marker（中文【置信度: N/5】+ 英文 fallback [Confidence: N/5]）；缺失默认 3；取最后一个 marker（避开草稿中提到的示例）
+- `strip_confidence_marker(response: &str) -> String`：剥离 marker（与 parse 对称取最后一个）
+- `ChatResponse` 加 `confidence: u8` + `secondary_retrieval_used: bool` 字段
+- **二次检索（CRAG §3.2 ambiguous 分支）**：confidence < 3 → 降阈值 0.65→0.55 二次本地召回 + LLM 重跑一次（**硬上限一次重试**，无论本地 / web 路径都允许 fallback）
+- **来源**：[CRAG arXiv:2401.15884](https://arxiv.org/abs/2401.15884) §3.2 + [Self-RAG arXiv:2310.11511](https://arxiv.org/abs/2310.11511) confidence token 简化
+
+### B1 backend: Citation 加 deep-link 数据
+- `Citation` 加字段：`chunk_offset_start: Option<usize>` / `chunk_offset_end: Option<usize>` / `breadcrumb: Vec<String>`
+- ~~**Known limitation**：当前 Citation.breadcrumb 永远 `vec![]`，offset 永远 `None`~~ **RESOLVED in W3 batch A**（per F2，indexer 透传完整闭环；offset 当前是 sidecar 累计 char，W5+ 真正按行号映射）
+- 前端 Reader 模态高亮 / 滚动到 offset 是单独 PR（下次 Tauri/Preact 会话）
+
+### 工程
+- chat 模块 `pub(crate)` + `lib.rs` 精确 re-export `Citation` / `ChatEngine` / `ChatResponse` / `parse_confidence` / `strip_confidence_marker`（不暴露 ChatEngine 内部依赖）
+- 新建 `ACKNOWLEDGMENTS.md` + `.zh.md` 项目根 attribution registry，每个抄袭点必须登记
+- 测试：attune-core lib 394 → 415（+21）+ 11 集成 = 26 新测试。0 回归
+- **Two rounds of code review**：R1 4 严重 + 5 重要全修；R2 conditional pass + P1 #2 strip 对称已修；剩余 P1/P2 followups 见 `tmp/w2-batch1-followups.md`
+
+## A1 Memory Consolidation MVP (2026-04-27)
+
+12-week 战略 v2 Phase 1 W1。引入**周期性 episodic memory** 数据模型 — chunk_summaries 按时间窗口聚合成"用户那天学了什么"的高层记忆，是 attune"自进化记忆"叙事（mem0 参考）的数据基石。详见 [`docs/superpowers/specs/2026-04-27-memory-consolidation-design.md`](../docs/superpowers/specs/2026-04-27-memory-consolidation-design.md)。
+
+- **`memories` 表新增**：id / kind / window_start/end / source_chunk_hashes (JSON, sorted) / summary_encrypted / model / created_at；唯一索引 `uq_memories_source(kind, source_chunk_hashes)` 保证幂等
+- **CHECK 约束已预先支持** `('episodic', 'semantic')`，W5+ 加 semantic 时无需 schema migration
+- **`attune_core::memory_consolidation`** 新模块：三阶段 API（prepare/generate/apply）+ `generate_one_episodic_memory` 单 bundle helper（供 worker 按 bundle check H1 LLM 配额）
+- **MVP 边界**：仅 episodic（按 1 天时间窗口）；semantic / chat 检索集成 / conflict detection / 用户面 UI 都明示推迟到 W5+
+- **生产 worker** `attune-server::state::start_memory_consolidator`：6h 周期，三阶段锁释放（与 skill_evolver 同构），Phase 2 按 bundle 取 LLM 配额，Phase 3 重新 lock 复查 vault state + 重新取 dek 防 stale 密钥
+- **30 天 lookback**：超过 30 天的老 chunk 当前不会被 consolidate（设计：留给 W5+ semantic memory）；现存 vault 升级时老历史不会自动 backfill
+- **测试**：6 store CRUD（含幂等验证）+ 10 单元（prepare/generate/apply 三阶段 + 边界）+ 4 集成（真 Store + tempfile + MockLlm 完整周期）。attune-core 总测试 378 → 394
+- **Test helper feature gate**：`__test_seed_chunk_summary` 用 `#[cfg(any(test, feature = "test-utils"))]` 守护，生产二进制不暴露；attune-core 自身 dev-dep 启用 test-utils，`cargo test` 无需额外 flag
+- **Two rounds of code review**：R1 5 issues 全修（LLM 配额超发、Phase 3 stale dek、test helper 暴露、model name race、CHECK 约束等）；R2 conditional pass + P1-1 dev-dep fix
+
+## H1 资源治理框架 (2026-04-27)
+
+12-week 战略 v2 Phase 1 W1。引入**任务级协作式资源治理**，所有后台 worker 的"系统好公民"基础设施。详见 [`docs/system-impact.md`](../docs/system-impact.md)。
+
+- **`attune_core::resource_governor`** 新模块：`Budget` / `Profile` / `TaskKind` / `TaskGovernor` / `GovernorRegistry` / `SysinfoMonitor`
+- **三档预设**：`Conservative` / `Balanced`（默认）/ `Aggressive`，每档 × 10 任务种类共 30 组合配置
+- **全局 CPU 阈值语义**：`cpu_pct_max` 是"系统全局 CPU 占用 > 阈值时本任务暂缓"，多 worker 共享同一全局指标，避免 budget 累加 > 100% 失真
+- **顶栏 Pause 全局信号**：`global_registry().pause_all()` 1 秒内停所有 worker，集成测试验证
+- **LLM 速率窗口**：SkillEvolution / MemoryConsolidation 类任务额外 `allow_llm_call()` 滑动小时窗口，防止 LLM 失败重试风暴
+- **W1 已 retrofit**：`attune-server::state::start_{classify,rescan,queue,skill_evolver}_worker` 4 个生产 worker；`attune-core::queue::QueueWorker` 库路径
+- **测试**：30 组合 snapshot + 28 单元 + 4 集成 + 1 ignored 真烧 CPU（本地实测 32 burner 线程 + Conservative 15% 阈值 → throttled=50/allowed=0，治理 100% 生效）
+- **跨平台**：sysinfo 0.32 全 Linux/Windows/macOS；CPU 采样 250ms 缓存防 sysinfo MINIMUM_CPU_UPDATE_INTERVAL 退化
+- 设计文档：[`docs/superpowers/specs/2026-04-27-resource-governor-design.md`](../docs/superpowers/specs/2026-04-27-resource-governor-design.md)
+
 ## 已发布
 
 ## 深度阅读 + 批注 + 上下文压缩 (2026-04-18)
@@ -78,8 +344,7 @@
 ### 测试 / 回归
 
 - 单元测试 **213 → 299**（+86），零回归
-- 完整 Playwright 回归：**10 Phase / 57 显式断言 / 100% 通过**
-  （报告：`docs/regression-report-2026-04-18.md`）
+- 完整 Playwright 回归：**10 Phase / 57 显式断言 / 100% 通过**（最新报告见 `docs/e2e-test-report.md`）
 - 每个 batch 两轮独立 code review，共 **12 轮审查**
   - 关闭 6 轮审查中的 **34+ 个 CRITICAL/IMPORTANT 问题**
   - 包括：prefix-anchor 终点越界 · soft-delete 孤立批注 · 子串匹配 footgun · vault 锁饥饿 · spawn_blocking silent drop · allocate_budget 导致缓存永不命中 · CJK token 2× 低估 · 等

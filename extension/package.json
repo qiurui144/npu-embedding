@@ -1,20 +1,23 @@
 {
-  "name": "npu-webhook-extension",
-  "version": "0.1.0",
+  "name": "attune-extension",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "npm run build -- --watch",
-    "build": "BUILD_TARGET=pages vite build && BUILD_TARGET=content vite build && BUILD_TARGET=background vite build && cp src/content/indicator.css dist/content/indicator.css",
-    "build:pages": "BUILD_TARGET=pages vite build",
-    "build:content": "BUILD_TARGET=content vite build",
-    "build:background": "BUILD_TARGET=background vite build"
+    "build": "cross-env BUILD_TARGET=pages vite build && cross-env BUILD_TARGET=content vite build && cross-env BUILD_TARGET=content_browse_capture vite build && cross-env BUILD_TARGET=background vite build && shx cp src/content/indicator.css dist/content/indicator.css",
+    "build:pages": "cross-env BUILD_TARGET=pages vite build",
+    "build:content": "cross-env BUILD_TARGET=content vite build",
+    "build:content_browse_capture": "cross-env BUILD_TARGET=content_browse_capture vite build",
+    "build:background": "cross-env BUILD_TARGET=background vite build"
   },
   "dependencies": {
     "preact": "^10.24"
   },
   "devDependencies": {
     "@preact/preset-vite": "2.8.3",
+    "cross-env": "^7.0.3",
+    "shx": "^0.3.4",
     "vite": "^5.4"
   }
 }

@@ -100,7 +100,7 @@ cd attune
 cargo build --release
 # 产物：
 # target/release/attune         (CLI, 4.1 MB)
-# target/release/attune-server  (HTTP Server, 26 MB)
+# target/release/attune-server-headless  (HTTP Server, 26 MB)
 ```
 
 ### 2. 启动 Ollama（可选，用于语义搜索）
@@ -127,7 +127,7 @@ ollama pull bge-m3
 ### 4. HTTP Server 模式
 
 ```bash
-./target/release/attune-server --port 18900
+./target/release/attune-server-headless --port 18900
 # 浏览器打开 http://localhost:18900/ 使用 Web UI
 # Chrome 扩展改后端地址到 http://localhost:18900 即可对接
 ```
@@ -141,7 +141,7 @@ openssl req -x509 -newkey rsa:2048 \
   -days 365 -nodes -subj "/CN=your-nas.local"
 
 # 启动 HTTPS + Bearer 认证
-./target/release/attune-server \
+./target/release/attune-server-headless \
   --host 0.0.0.0 \
   --port 18900 \
   --tls-cert cert.pem \
@@ -237,6 +237,43 @@ Master Password (用户记忆)  +  Device Secret (设备文件, 256-bit 随机)
 | GET | `/items/{id}` | 获取单个条目（解密）|
 | PATCH | `/items/{id}` | 更新条目 |
 | DELETE | `/items/{id}` | 软删除 |
+
+### Project / Case 卷宗（Sprint 1，详见 spec §2.1）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/POST | `/projects` | 列出 / 创建 Project（案件卷宗）|
+| GET/PATCH/DELETE | `/projects/{id}` | Project CRUD |
+| GET/POST/DELETE | `/projects/{id}/files` | 文件归属 Project |
+| GET | `/projects/{id}/timeline` | 案件时间线（事件 + 证据链）|
+
+### Workflow 引擎（Sprint 1 Phase C，详见 spec §3.3）
+
+- 内置 `law-pro/evidence_chain_inference` workflow，**文件上传**且**已归 Project**（用户接受 Phase B 推荐归类后）时自动跑
+- 4 步：抽实体（skill mock）→ 跨证据 (deterministic, SQL) → 推理（skill mock）→ 写批注（Phase C stub，Sprint 2 接 vault DEK）
+- WS 推送：`{"type": "workflow_complete", ...}` 跑完后通知前端
+- Sprint 2 将通过 Intent Router 接真实 LLM，并把 yaml 外提到 attune-law plugin
+
+### Plugin Loader（Sprint 2 Phase A）
+
+attune-server 启动时扫描 `~/.local/share/attune/plugins/`。每个子目录：
+- `plugin.yaml` 声明插件（id / name / type / version）
+- `workflows/*.yaml` 声明 workflow（按 attune-core schema 解析）
+- `capabilities/<cap_id>/plugin.yaml` 声明嵌套 skill
+
+触发器注册表：file_added 事件匹配插件中 `trigger.on == 'file_added'` 的 workflow，
+逐个 spawn-and-run，跑完通过 WebSocket 推 workflow_complete。
+
+attune-pro 的 `.attunepkg` 安装包解压到该目录。空插件目录 = 空操作（不会触发 workflow）。
+
+### UI 通知（Sprint 1 Phase D）
+
+WebSocket `/ws/scan-progress` 现在复用三种消息类型：
+- `progress` — embedding 队列 / classifier 计数（已有）
+- `project_recommendation` — 文件上传触发候选 Project 列表（含 overlap 分数）；chat 关键词触发归类提示
+- `workflow_complete` — Sprint 2 plugin 注册的 workflow 跑完时下发；右上角 banner toast
+
+前端在右下角渲染 RecommendationOverlay（接受 / 忽略），workflow 完成复用 Toast。
 
 ### 索引与系统
 
@@ -343,7 +380,7 @@ Web UI 功能：setup / unlock / lock、搜索、录入、条目列表、Device 
 | Binary | 大小 | 用途 |
 |--------|------|------|
 | attune | 4.2 MB | CLI 管理工具（7 个子命令）|
-| attune-server | 28 MB | HTTP API Server（TLS + Web UI + 搜索引擎）|
+| attune-server-headless | 28 MB | HTTP API Server（TLS + Web UI + 搜索引擎）|
 
 大小构成：rustls 密码学 + tantivy 全文 + usearch C++ binding + Tokio + Axum。可通过 `strip=true` + `panic=abort` 进一步压缩。
 
@@ -427,6 +464,36 @@ rust/
 - **Batch A.2** ✅ AI 批注（4 角度 · 3 阶段 snippet 匹配 · JSON salvage）
 - **Batch B.1** ✅ 上下文压缩流水线（摘要缓存 + 三阶段锁释放 + token chip）
 - **Batch B.2** ✅ 批注加权 RAG（精确 label 白名单 + 权重统计返前端）
+
+## 桌面分发
+
+Attune 双轨发版，共享同一份 Rust 后端代码：
+
+| 形态 | 二进制 | 适用场景 |
+|------|--------|---------|
+| **Attune Desktop** | `apps/attune-desktop`（Tauri 2 壳） | 笔电用户 — 双击 MSI / deb 安装，原生窗口 + 托盘 + 拖拽 |
+| **Attune Server**（headless） | `crates/attune-server/bin/headless.rs`（`attune-server-headless`） | K3 一体机 / NAS / 服务器 — `attune-server-headless --host 0.0.0.0 ...` |
+
+### 本地构建
+
+```bash
+# Linux
+cd apps/attune-desktop
+cargo install --locked tauri-cli --version "^2.0"
+(cd ../../rust/crates/attune-server/ui && npm ci && npm run build)
+cargo tauri build --bundles deb,appimage
+
+# Windows（在 Windows 主机上跑）
+cargo tauri build --bundles nsis,msi
+```
+
+产物：`target/release/bundle/{deb,appimage,nsis,msi}/`。
+
+### 自动更新
+
+桌面端启动 30 秒后检查 `https://updates.attune.ai/desktop/{target}/{version}/latest.json`。
+更新包用 minisign 签名，公钥嵌入二进制。完整设计见
+`docs/superpowers/specs/2026-04-25-industry-attune-design.md` §6.6。
 
 ## License
 

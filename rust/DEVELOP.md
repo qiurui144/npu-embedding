@@ -399,6 +399,136 @@ fn process_batch() -> Result<usize> {
 
 **当前状态**：Worker 结构完整，`process_all()` 可同步处理（测试用），后台 `start()` 尚未在 server 启动时自动启动（Phase 4 补全）。
 
+## J 系列 RAG Production Quality（W2 batch 1，2026-04-27）
+
+详见 [`docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md`](../docs/superpowers/specs/2026-04-27-w2-rag-quality-batch1-design.md)。所有抄袭来源登记在 [`ACKNOWLEDGMENTS.md`](../ACKNOWLEDGMENTS.md)。
+
+**3 个核心改造**：
+
+```rust
+// J1：chunker 输出带面包屑路径，注入 chunk 文本前
+let sections = extract_sections_with_path(content);
+for s in &sections {
+    let prefixed = s.with_breadcrumb_prefix();  // "> A > B > C\n\n[content]"
+    indexer.embed(&prefixed);
+}
+
+// J3：search 路径分流 — chat 用 RAG 默认（0.65），通用 search 不过滤
+let rag_params = SearchParams::with_defaults_for_rag(5);   // min_score=Some(0.65)
+let general_params = SearchParams::with_defaults(5);        // min_score=None
+
+// J5：confidence 解析 + 二次检索（CRAG ambiguous 分支）
+let response_1 = run_llm_once(...);
+let conf_1 = parse_confidence(&response_1);   // 末尾【置信度: N/5】
+if conf_1 < 3 {
+    let broader = search(query, Some(0.55));   // 降阈值二次召回
+    let response_2 = run_llm_once_with(broader);
+}
+let display = strip_confidence_marker(&response);  // 用户看不到 marker
+```
+
+**B1 后端字段（W3 batch A 已透传真值）**：`Citation.chunk_offset_start/end` + `breadcrumb` 由 indexer 写入 `chunk_breadcrumbs` sidecar 表，search 时 join 填到 `SearchResult` → ChatEngine 映射到 `Citation`。空数据（老 vault / web 来源）优雅降级为 `None` / `vec![]`，serde `skip_serializing_if` 让空字段不出现在 JSON 保持 Chrome 扩展旧客户端契约。Offset 当前是 sidecar 累计 char count（v1 启发式），W5+ 真正按行号映射回原文。
+
+**Sidecar 表 6 步检查清单**（`chunk_breadcrumbs` / `chunk_summaries` / `annotations` 同模式）：
+1. `mod.rs` schema 加 `FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE`
+2. 独立 `store/<table>.rs` 模块写 CRUD（注意 dek 加密敏感字段）
+3. 在 `store/items.rs::delete_item` 显式 `DELETE FROM <table> WHERE item_id = ?1`（软删除路径，FK CASCADE 仅硬删除生效）
+4. 单元测试覆盖 `fk_cascade_*` + `soft_delete_clears_*` 双场景
+5. indexer pipeline（routes/upload + ingest + scanner + scanner_webdav）写入时同步调 `upsert_*`，错误用 `tracing::warn!` 不阻塞主流程
+6. ChatEngine 等读路径优雅降级（无 sidecar 行返回 None / 空 Vec）
+
+## W3 batch A：Web search 缓存（C1, 2026-04-27）
+
+详见 [`docs/superpowers/specs/2026-04-27-w3-batch-a-design.md`](../docs/superpowers/specs/2026-04-27-w3-batch-a-design.md) §3。
+
+```rust
+// chat.rs web fallback 流程：
+let cached = store.get_web_search_cached(dek, query, now_secs)?;
+let results = match cached {
+    Some(hits) => hits,                                                       // C1 命中（🆓）
+    None => {
+        let fresh = ws.search(query, 3)?;                                     // 网络（💰）
+        let _ = store.put_web_search_cached(dek, query, &fresh, 30天TTL, now); // 含空结果
+        fresh
+    }
+};
+```
+
+**抄袭来源**：[吴师兄 §6](https://mp.weixin.qq.com/s/YNcfSN0uv1c1LsLPzgB0jw) 高频 query 缓存模式。
+
+**Attribution 规范**（强制）：
+- 每个抄袭外部 pattern 的代码段必须含 `// per <Source> §<Section>` 内联注释
+- 每个 PR 合入前必须更新 `ACKNOWLEDGMENTS.md` 对应条目
+- Commit message 含 `Inspired-by: <project>(<URL>)` 行
+
+## 资源治理框架（H1, 2026-04-27）
+
+`attune_core::resource_governor` 提供任务级 CPU/RAM/IO 协作式调度。所有常驻后台 worker 必须接入。详见 [`docs/superpowers/specs/2026-04-27-resource-governor-design.md`](../docs/superpowers/specs/2026-04-27-resource-governor-design.md)。
+
+**关键概念**：`cpu_pct_max` 是**系统全局 CPU 阈值**（不是单进程占用上限）— "系统忙就让让"协作式语义。
+
+### 接入新 worker 的 5 步
+
+```rust
+use attune_core::resource_governor::{global_registry, TaskKind};
+
+// 1. 在 worker 启动时注册 governor（同 TaskKind 多次返回同一 Arc）
+let governor = global_registry().register(TaskKind::EmbeddingQueue);
+
+std::thread::spawn(move || {
+    while running.load(Ordering::SeqCst) {
+        // 2. 每次循环顶部 check should_run（被 pause 或全局 CPU 超阈值时返回 false）
+        if !governor.should_run() {
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        }
+
+        match do_work() {
+            Ok(_) => {
+                // 3. 工作成功后让 governor 决定退让时长（throttle）
+                std::thread::sleep(governor.after_work());
+            }
+            Err(_) => std::thread::sleep(POLL_INTERVAL),
+        }
+
+        // 4. （可选）调 LLM 前 check 速率配额
+        // if !governor.allow_llm_call() { continue; }
+
+        // 5. 新增 TaskKind 时，需要在 profiles.rs 三档表 + 30 组合 snapshot 测试同步
+    }
+});
+```
+
+**已 retrofit 的 worker**（W1）：`attune-server::state` 中 `start_classify_worker` / `start_rescan_worker` / `start_queue_worker` / `start_skill_evolver`，均参考 `state.rs` 实际代码。
+
+## A1 Memory Consolidation（2026-04-27）
+
+`attune_core::memory_consolidation` 把 `chunk_summaries` 按时间窗口（默认 1 天）聚合成 episodic memory。设计稿：[`docs/superpowers/specs/2026-04-27-memory-consolidation-design.md`](../docs/superpowers/specs/2026-04-27-memory-consolidation-design.md)。
+
+**三阶段 API（与 skill_evolution 同构）**：
+
+```rust
+// Phase 1（持 vault 锁）：扫 chunk_summaries → 按天分桶 → 解密 → 过滤已 consolidated
+let bundles = prepare_consolidation_cycle(store, dek, now_secs)?;
+
+// Phase 2（无锁）：每 bundle 单独 LLM 调用 — 生产路径必须用 generate_one + 配额 check
+for bundle in &bundles {
+    if !governor.allow_llm_call() { break; }
+    summaries.push(generate_one_episodic_memory(llm, bundle));
+}
+
+// Phase 3（重新持 vault 锁 + 复查 unlocked + 重新取 dek）：幂等 INSERT OR IGNORE
+apply_consolidation_result(store, &fresh_dek, &bundles, &summaries, model, now_secs)?;
+```
+
+**幂等性保证**：唯一索引 `uq_memories_source(kind, source_chunk_hashes)` — 相同 chunk 集合二次跑 `INSERT OR IGNORE` 返回 0 不重复。
+
+**生产 worker**：`attune-server::state::start_memory_consolidator`（6h 周期）。
+
+**MVP 边界**：仅 episodic、不做 chat 检索集成、不做 conflict detection、CHECK 已预放宽支持 semantic 但 W1 不写入。
+
+**测试 helper**：`Store::__test_seed_chunk_summary` 仅在 `#[cfg(any(test, feature = "test-utils"))]` 下编译。`attune-core` 自 dev-dep 启用 `test-utils`，`cargo test` 无需 `--features` 即可跑集成测试。
+
 ## 数据库 Schema
 
 ```sql

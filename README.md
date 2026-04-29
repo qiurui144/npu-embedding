@@ -1,10 +1,49 @@
 # Attune
 
-[English](README.md) · [中文](README.zh.md)
+[中文](README.zh.md) · [English](README.md) · [Wiki](https://wiki.your-company.com/attune/) · [Pricing](https://wiki.your-company.com/plans/attune-pricing/)
+
+> 🇨🇳 **中文用户请优先阅读** [README.zh.md](README.zh.md) — 项目文档以中文为主，本英文版为辅。
 
 **Private AI Knowledge Companion** — Local-first, globally augmented, increasingly attuned to your expertise.
 
 Attune is a personal AI knowledge base designed for knowledge-intensive professionals (lawyers, patent agents, researchers, consultants). Your professional domain becomes clearer the more you use it; local knowledge answers first, and the system reaches out to the web only when needed. All data is encrypted on your own device — portable across machines, portable across jobs.
+
+## 📥 Download
+
+Latest preview: **v0.6.0-alpha.3** ([Release page](https://github.com/qiurui144/attune/releases/tag/desktop-v0.6.0-alpha.3))
+
+| Platform | File | Size | Notes |
+|----------|------|------|-------|
+| Windows | [`Attune_0.6.0_x64-setup.exe`](https://github.com/qiurui144/attune/releases/download/desktop-v0.6.0-alpha.3/Attune_0.6.0_x64-setup.exe) | 16 MB | NSIS installer (recommended) |
+| Windows | [`Attune_0.6.0_x64_en-US.msi`](https://github.com/qiurui144/attune/releases/download/desktop-v0.6.0-alpha.3/Attune_0.6.0_x64_en-US.msi) | 31 MB | MSI for enterprise |
+| Linux deb | [`Attune_0.6.0_amd64.deb`](https://github.com/qiurui144/attune/releases/download/desktop-v0.6.0-alpha.3/Attune_0.6.0_amd64.deb) | 27 MB | Debian/Ubuntu |
+| Linux AppImage | [`Attune_0.6.0_amd64.AppImage`](https://github.com/qiurui144/attune/releases/download/desktop-v0.6.0-alpha.3/Attune_0.6.0_amd64.AppImage) | 96 MB | Generic Linux |
+
+> ⚠️ alpha preview for dogfood. Official v0.6.0 GA pending tag on `main`.
+
+## v0.6.0-rc.5 highlights (2026-04-28)
+
+🎯 **Three-track PRO benchmark** — verified end-to-end RAG quality on legal + general English + Chinese fundamentals:
+
+| Scenario | Hit@10 | MRR | Verdict |
+|----------|--------|-----|---------|
+| 法律 / lawcontrol corpus | **0.80** | 0.50 | ✅ PRO |
+| Rust / rust-book | **1.00** | **1.00** | ✅ PRO 满分 |
+| 中文八股 / cs-notes | **1.00** | **1.00** | ✅ PRO 满分 |
+| **5-dim answer quality (lawcontrol golden_qa)** | **25.00/25** (100%) | 10/10 excellent | ✅ +39% vs baseline |
+
+🔒 **Phase A.5 — Three-layer privacy model**:
+- **L0 🔒**: per-file flag, chunk never leaves device (forced local LLM)
+- **L1 default**: 12 PII classes (id-card with ISO 7064 / phone / email / 8 API key vendors / etc.) with reversible `[KIND_N]` placeholders + outbound audit log (CSV exportable for compliance)
+- **L3** (v0.7): LLM-based semantic redaction on Tier T3+/K3 hardware
+
+🌐 **F-Pro — Cross-domain pollution defense**:
+- `items.corpus_domain` metadata + `[领域: legal]` chunk prefix + cross-domain penalty (0.4) + keyword query intent detection (zero LLM call)
+- Logical domain isolation on shared vault — no more "反洗钱" pulling Java algorithm docs
+
+📋 **Evidence flow end-to-end**: chat citations now include real `breadcrumb` (chapter path), `chunk_offset_start/end` (Reader deep-link target), and `confidence` (1-5, parsed from LLM strict-prompt marker).
+
+Reproduce: `bash scripts/bench-orchestrator.sh all && python3 scripts/run-final-eval.py`. Full benchmark methodology in [`docs/benchmarks/dual-track-baseline.md`](docs/benchmarks/dual-track-baseline.md), release notes in [`docs/v0.6-release-notes.md`](docs/v0.6-release-notes.md).
 
 ---
 
@@ -18,6 +57,25 @@ This repository contains two parallel product lines sharing the Chrome extension
 | **Rust production** | [`rust/`](rust/README.md) | Production-grade Private AI Knowledge Companion. Axum + rusqlite + tantivy + usearch + Preact UI |
 
 Validated Python features get promoted to the Rust line. See [`rust/README.md`](rust/README.md) for the full Rust documentation.
+
+---
+
+## Three-product matrix (where Attune fits)
+
+> Decisive positioning (2026-04-27): Attune (this repo, OSS) is a **generic personal knowledge base**, with **zero industry binding**. Industry depth (law / medical / academic / sales / engineering / patent) is delivered as commercial plugin packs in `attune-pro`. Small-team B2B law-firm scenarios are handled by a separate product, `lawcontrol`.
+
+| Product | License | Form | User group |
+|---------|---------|------|------------|
+| **`attune`** (this repo) | Apache-2.0 | Tauri desktop / Chrome extension | **Personal generic users** — universal RAG, encrypted vault, browser capture, MCP outlet |
+| **`attune-pro`** (private) | Proprietary | Plugin packs (.attunepkg signed) loaded into `attune` | **Personal industry users** — law / presales / patent / tech / medical / academic vertical packs |
+| **`lawcontrol`** (separate product) | Proprietary | Django + Vue B2B SaaS | **Law-firm small teams** — multi-tenant RBAC + case assignment + multi-user collaboration |
+
+**Equation:**
+- Personal generic user = `attune (OSS)`
+- Personal industry user = `attune (OSS)` + `attune-pro/<vertical>-pro` plugin pack
+- Industry small team = `lawcontrol`
+
+The three products are technically independent (no cross-product runtime dependency) and strategically complementary (same team, distinct user segments). Full strategy + admission rules: [`docs/oss-pro-strategy.md`](docs/oss-pro-strategy.md) (bilingual).
 
 ---
 
@@ -56,15 +114,23 @@ Local knowledge first. When the local vault has no match, a headless Chrome (or 
 
 ## Quick start
 
-### Rust production line (recommended)
+### 5 steps from download to first use
+
+1. **Download** the binary from the [Releases](../../releases) page (or `cargo build --release` from source — see below).
+2. **Run** `./attune-server --host 127.0.0.1 --port 18900` (Linux) or double-click `attune-server.exe` (Windows). The first launch creates `~/.local/share/attune/` (or `%LOCALAPPDATA%\attune\`).
+3. **Open** `http://localhost:18900/` in your browser. The first-run wizard appears automatically.
+4. **Set Master Password** + pick an LLM backend on step 3 (see "AI model platforms" table below for `base_url` / model / pricing). API key is stored encrypted with your master password.
+5. **Bind data** in the wizard's last step: drop a file, point at a folder, or skip and use the Items / Reader UI later.
+
+That's it. The Cmd+K palette jumps between Chat, Items, Reader, Sessions, and Settings. Lock the vault from the top bar at any time.
+
+### Rust production line (build from source)
 
 ```bash
 cd rust
 cargo build --release
 ./target/release/attune-server --host 127.0.0.1 --port 18900
 ```
-
-Then open `http://localhost:18900/` in your browser to go through the 5-step first-run wizard (Welcome → Master Password → LLM Backend → Hardware Detection → First Data).
 
 Full documentation: [`rust/README.md`](rust/README.md).
 
@@ -75,6 +141,69 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 uvicorn npu_webhook.main:app --reload --port 18900
 ```
+
+---
+
+## AI model platforms
+
+Attune speaks the **OpenAI-compatible chat protocol**, so you can plug in any provider that exposes `/v1/chat/completions`. The Settings → AI tab includes a "Quick preset" dropdown that pre-fills `endpoint` + `model` for the providers below — you only paste the API key.
+
+| Provider | base_url | Recommended model | Price (input)* | Get a key |
+|----------|----------|-------------------|----------------|-----------|
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` | ¥1 / M tok | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
+| **Aliyun Qwen** (DashScope) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` | ¥4 / M tok | [bailian.console.aliyun.com](https://bailian.console.aliyun.com/?apiKey=1) |
+| **Zhipu GLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` | ¥50 / M tok | [open.bigmodel.cn](https://open.bigmodel.cn/usercenter/apikeys) |
+| **Moonshot Kimi** | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` | ¥12 / M tok | [platform.moonshot.cn](https://platform.moonshot.cn/console/api-keys) |
+| **Baichuan** | `https://api.baichuan-ai.com/v1` | `Baichuan4-Turbo` | ¥15 / M tok | [platform.baichuan-ai.com](https://platform.baichuan-ai.com/console/apikey) |
+| **Ollama (local)** | `http://localhost:11434/v1` | `qwen2.5:7b` | free / local | `curl -fsSL https://ollama.com/install.sh \| sh && ollama pull qwen2.5:7b` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` | ~¥3 / M tok | [platform.openai.com](https://platform.openai.com/api-keys) |
+
+*Pricing is the input-token rate at the time of writing. Check each provider's pricing page for current rates and output-token rates.
+
+**Recommendation**: DeepSeek for daily use (cheapest non-local), Ollama if you have a 16 GB+ GPU, OpenAI when you need maximum quality.
+
+---
+
+## Skill development (free + Pro, same mechanism)
+
+A *skill* is a small YAML + prompt bundle that Attune auto-suggests when your chat message matches its keywords or regex. Both the free build and Pro share the same loader — Pro just preinstalls more skills. **You never edit YAML through the UI; you write or download skills, drop them in the plugins folder, then toggle them in Settings → Skills.**
+
+**1. Create the directory**
+
+```
+~/.local/share/attune/plugins/<plugin-id>/
+```
+
+(Windows: `%APPDATA%\attune\plugins\<plugin-id>\`)
+
+**2. Write `plugin.yaml`**
+
+```yaml
+id: my-plugin/contract-quick-review
+name: 快速合同审查
+type: skill
+version: "0.1.0"
+description: 30-second triage of contract risks
+
+chat_trigger:
+  enabled: true            # plugin author can ship disabled-by-default
+  needs_confirm: true      # show user a confirm prompt before running
+  priority: 5              # higher wins when multiple skills match
+  patterns:
+    - '帮我.*审查.*合同'      # any matching pattern fires
+  keywords: ['审查合同', '合同风险', 'contract review']
+  min_keyword_match: 1     # how many keyword hits required
+  exclude_patterns: ['起草']  # vetoes the match if hit
+  requires_document: true  # only fire when chat has a pending file
+```
+
+**3. Write `prompt.md`** — the actual LLM prompt loaded when the skill runs.
+
+**4. Restart Attune** so the plugin registry rescans the folder.
+
+**5. Open Settings → Skills tab.** Your skill appears with its keywords; toggle it on/off without touching YAML again.
+
+Distributing skills to others: zip the folder as `<plugin-id>.attunepkg` — recipients drop it into the same plugins folder. Pro skills (legal / sales / academic packs) ship through the same path; the only difference is they come pre-installed.
 
 ---
 

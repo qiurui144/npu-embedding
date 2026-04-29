@@ -2,7 +2,7 @@
 //
 // ## 设计目标
 //
-// 对齐 lawcontrol 的插件格式（见 `/data/company/lawcontrol/plugins/skills/*/plugin.yaml`），
+// 对齐 lawcontrol 的插件格式（见 `/data/company/project/lawcontrol/plugins/skills/*/plugin.yaml`），
 // 让未来：
 //   1. 商业插件（律师 / 售前 / 医疗）通过 PluginHub 分发，一套 YAML 两边都能装
 //   2. AI 批注 4 个角度（内置）从 plugin.yaml 加载，改 prompt 不用重新编译
@@ -45,7 +45,7 @@ use crate::error::{Result, VaultError};
 use serde::{Deserialize, Serialize};
 
 /// 插件清单（从 plugin.yaml 解析）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
@@ -73,7 +73,99 @@ pub struct PluginManifest {
 
     #[serde(default)]
     pub output: Option<PluginOutputSpec>,
+
+    /// Sprint 2 Skills Router: chat 关键词路由（type=skill 时使用）
+    #[serde(default)]
+    pub chat_trigger: Option<ChatTrigger>,
+
+    /// v0.6 新增：vertical plugin 提供的行业 PII 正则。
+    /// 由 PluginRegistry::all_pii_patterns 聚合，注入 attune-server 的 Redactor。
+    /// 例：law-pro 提供 case_no、medical-pro 提供 medical_record_no、patent-pro 提供 patent_no。
+    #[serde(default)]
+    pub pii_patterns: Vec<PiiPatternSpec>,
 }
+
+/// vertical plugin 在 plugin.yaml 中声明的 PII 正则。
+///
+/// ```yaml
+/// pii_patterns:
+///   - name: case_no
+///     regex: "\\(\\d{4}\\)[\\u4e00-\\u9fa5]+\\d+号"
+/// ```
+///
+/// `name` 决定 placeholder 前缀（`[CASE_NO_1]`），全局唯一以避免不同 plugin 冲突。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PiiPatternSpec {
+    pub name: String,
+    pub regex: String,
+}
+
+/// chat_trigger 配置（参考 lawcontrol skill plugin.yaml）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatTrigger {
+    /// 是否启用 chat 触发（plugin.yaml 默认 false）
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 触发后是否需要用户显式确认才跑 skill（默认 true，安全优先）
+    #[serde(default = "default_true")]
+    pub needs_confirm: bool,
+
+    /// 多个 skill 同时命中时优先级（数字越大越优先）
+    #[serde(default)]
+    pub priority: i32,
+
+    /// 正则模式列表（任一命中算匹配）
+    #[serde(default)]
+    pub patterns: Vec<String>,
+
+    /// 关键词列表（命中数 >= min_keyword_match 算匹配）
+    #[serde(default)]
+    pub keywords: Vec<String>,
+
+    /// 关键词最小命中数（默认 1）
+    #[serde(default = "default_one")]
+    pub min_keyword_match: usize,
+
+    /// 否决正则（任一命中即否决，即使 patterns/keywords 命中）
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+
+    /// 是否要求 chat 上下文有 pending file（如某些深度 skill 需要文件）
+    #[serde(default)]
+    pub requires_document: bool,
+
+    /// 短描述（UI 展示）
+    #[serde(default)]
+    pub description: String,
+
+    /// v0.6 新增：Project 推荐归类的触发关键词列表（如 ["案件","客户","项目"]）。
+    /// 用户在 chat 中输入这些词时，project_recommender 弹出"是否归到 Project"提示。
+    /// 由 PluginRegistry::all_chat_trigger_project_keywords 聚合所有 plugin 的列表。
+    /// 不填或空 = 该 plugin 不贡献关键词。OSS attune 默认无 plugin → 列表 [] → 永不触发。
+    #[serde(default)]
+    pub project_keywords: Vec<String>,
+}
+
+impl Default for ChatTrigger {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            needs_confirm: true,
+            priority: 0,
+            patterns: Vec::new(),
+            keywords: Vec::new(),
+            min_keyword_match: 1,
+            exclude_patterns: Vec::new(),
+            requires_document: false,
+            description: String::new(),
+            project_keywords: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool { true }
+fn default_one() -> usize { 1 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginConstraints {
@@ -89,7 +181,7 @@ pub struct PluginConstraints {
     pub output_format: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginOutputSpec {
     #[serde(default)]
     pub schema: Option<serde_json::Value>,
@@ -279,5 +371,75 @@ label_prefix: "X"
         let p = LoadedPlugin::from_strings(SAMPLE_YAML, "").unwrap();
         let c = AnnotationAngleConfig::from_loaded(&p).unwrap();
         assert!(c.output_schema.is_some());
+    }
+
+    #[test]
+    fn parses_workflow_type_manifest() {
+        let yaml = r#"
+id: examples/cross_entity_chain
+name: 跨实体推理示例
+type: workflow
+version: "1.0.0"
+author: attune-examples
+description: 通用示例 — 文件上传后跨实体联想（行业层各 vertical 用此 schema 实现）
+"#;
+        let manifest: PluginManifest = serde_yaml::from_str(yaml).expect("parse workflow manifest");
+        assert_eq!(manifest.id, "examples/cross_entity_chain");
+        assert_eq!(manifest.plugin_type, "workflow");
+        assert_eq!(manifest.version, "1.0.0");
+    }
+
+    #[test]
+    fn parses_skill_type_manifest() {
+        let yaml = r#"
+id: examples/skill_demo
+name: 技能示例
+type: skill
+version: "0.1.0"
+"#;
+        let manifest: PluginManifest = serde_yaml::from_str(yaml).expect("parse skill manifest");
+        assert_eq!(manifest.plugin_type, "skill");
+    }
+
+    #[test]
+    fn parses_skill_with_chat_trigger() {
+        let yaml = r#"
+id: examples/skill_with_trigger
+name: 含 chat_trigger 的技能示例
+type: skill
+version: "0.1.0"
+chat_trigger:
+  enabled: true
+  needs_confirm: true
+  priority: 5
+  patterns:
+    - '帮我.*处理.*文档'
+  keywords: ['处理文档', '文档分析']
+  min_keyword_match: 1
+  exclude_patterns: ['起草']
+  requires_document: true
+  description: 通用 chat_trigger 示例（具体行业实现见各 vertical 插件）
+"#;
+        let m: PluginManifest = serde_yaml::from_str(yaml).expect("parse");
+        let ct = m.chat_trigger.expect("should have chat_trigger");
+        assert!(ct.enabled);
+        assert!(ct.needs_confirm);
+        assert_eq!(ct.priority, 5);
+        assert_eq!(ct.keywords.len(), 2);
+        assert_eq!(ct.min_keyword_match, 1);
+        assert!(ct.requires_document);
+        assert_eq!(ct.exclude_patterns, vec!["起草".to_string()]);
+    }
+
+    #[test]
+    fn parses_skill_without_chat_trigger() {
+        let yaml = r#"
+id: simple-skill
+name: 简单 skill
+type: skill
+version: "1.0.0"
+"#;
+        let m: PluginManifest = serde_yaml::from_str(yaml).expect("parse");
+        assert!(m.chat_trigger.is_none());
     }
 }

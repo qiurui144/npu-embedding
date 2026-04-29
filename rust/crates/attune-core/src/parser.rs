@@ -28,7 +28,7 @@ pub fn parse_file(path: &Path) -> Result<(String, String)> {
         _ => {
             // Text-based files (md, txt, code)
             let content = std::fs::read_to_string(path)
-                .map_err(|e| VaultError::Io(e))?;
+                .map_err(VaultError::Io)?;
             parse_content(&content, &filename)
         }
     }

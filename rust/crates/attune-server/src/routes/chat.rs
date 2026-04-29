@@ -69,6 +69,64 @@ pub async fn chat(
         body.history.drain(..drop);
     }
 
+    // Sprint 1 Phase B: chat keyword trigger for project recommendation
+    // 纯 observer：检测当前 user message 中的项目相关关键词，命中即通过 broadcast 推 ws hint，
+    // 不影响主流程（错误静默忽略，broadcast 无订阅者也只返回 Err 不 panic）
+    //
+    // v0.6 边界瘦身：keywords 不再硬编码到 attune-core，由 PluginRegistry 聚合各
+    // vertical plugin 的 chat_trigger.project_keywords 后传入。无 plugin 时 = []，永不触发。
+    let project_keywords: Vec<&str> = state
+        .plugin_registry
+        .all_chat_trigger_project_keywords()
+        .into_iter()
+        .collect();
+    if let Some(hint) = attune_core::project_recommender::recommend_for_chat(
+        &body.message,
+        &project_keywords,
+    ) {
+        let payload = serde_json::json!({
+            "type": "project_recommendation",
+            "trigger": "chat_keyword",
+            "matched_keywords": hint.matched_keywords,
+            "suggestion": hint.suggestion,
+        });
+        let _ = state.recommendation_tx.send(payload);
+    }
+
+    // Sprint 2 Phase C: Skills Router — 纯 observer，匹配 plugin skill 后通过 broadcast 推 ws skill_suggested
+    // 不影响主流程；disabled 集合从 vault settings.skills.disabled 读取（Task 4），
+    // has_pending_doc 留 false（Task 5 后由 chat context 决定）
+    {
+        let registry = state.plugin_registry.clone();
+        // 从 vault metadata 读 settings.skills.disabled；锁失败 / 读失败 / 解析失败均回退空集合
+        // （observer 路径不能阻断主流程）
+        let disabled: std::collections::HashSet<String> = {
+            let bytes = match state.vault.lock() {
+                Ok(vault) => vault.store().get_meta("app_settings").ok().flatten(),
+                Err(_) => None,
+            };
+            bytes
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| v.get("skills")
+                    .and_then(|s| s.get("disabled"))
+                    .and_then(|d| d.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect()))
+                .unwrap_or_default()
+        };
+        let has_pending_doc = false;
+        let router = attune_core::intent_router::IntentRouter::new(&registry);
+        let matches = router.route(&body.message, has_pending_doc, &disabled);
+        if !matches.is_empty() {
+            let payload = serde_json::json!({
+                "type": "skill_suggested",
+                "trigger": "chat_intent",
+                "matches": matches,
+                "user_message": body.message,
+            });
+            let _ = state.recommendation_tx.send(payload);
+        }
+    }
+
     // Check LLM availability
     let llm = state.llm.lock()
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "llm lock poisoned"}))))?
@@ -111,8 +169,15 @@ pub async fn chat(
     // 1b. 用 learned_expansions 自动扩展查询词（语义扩展，透明无感）
     let expanded_query = attune_core::skill_evolution::expand_query(&body.message, &app_settings);
 
+    // v0.6 Phase B F-Pro Stage 4：query 意图 detect → cross-domain penalty
+    let detected_domain = attune_core::search::detect_query_domain(&expanded_query);
+
     // 1. Search knowledge base via three-stage pipeline (initial_k → rerank → top_k)
-    let search_params = attune_core::search::SearchParams::with_defaults(5);
+    let mut search_params = attune_core::search::SearchParams::with_defaults(5);
+    if let Some(d) = detected_domain.as_ref() {
+        search_params.domain_hint = Some(d.clone());
+        tracing::info!("F-Pro: query='{}' → detected_domain={d}", body.message.chars().take(40).collect::<String>());
+    }
     let reranker = state.reranker.lock().map_err(|_| {
         (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "reranker lock"})))
     })?.clone();
@@ -193,7 +258,7 @@ pub async fn chat(
     // spawn_blocking 失败时 weighted_results 为空 —— 此时我们丢失了原 search_results。
     // 但 spawn_blocking 的 panic/join 错误极罕见（内存爆/进程被信号中断），概率远低于
     // 用户被影响的回本。已通过 tracing::warn 记录，UI 会显示 knowledge_count=0 + hint。
-    search_results = weighted_results.drain(..).collect();
+    search_results = std::mem::take(&mut weighted_results);
 
     // 按新的 score 降序重排（过时已剔除，boost 项自然前移）
     search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -258,6 +323,10 @@ pub async fn chat(
             "content": r.content,
             "score": r.score,
             "source_type": r.source_type,
+            // v0.6 Phase B fix: 透传证据流字段到 chat citations
+            "breadcrumb": r.breadcrumb,
+            "chunk_offset_start": r.chunk_offset_start,
+            "chunk_offset_end": r.chunk_offset_end,
         })).collect()
     };
 
@@ -352,6 +421,10 @@ pub async fn chat(
                     };
 
                     // Phase 2（无锁）：对真正 miss 调 LLM
+                    // Fast-fail: 第 1 个 chunk LLM 调用失败后跳过剩余（避免 5 chunk × 120s timeout 串行
+                    // 把 client 卡到 180s 断开）。第 1 个失败通常表示 Ollama / LLM provider 不健康，
+                    // 重试也是浪费。所有 miss chunk 改用原文降级。
+                    let mut llm_unavailable = false;
                     for s in slots.iter_mut() {
                         if s.is_short || s.was_cache_hit || s.item_id.is_empty() {
                             continue;
@@ -359,6 +432,10 @@ pub async fn chat(
                         let Some(ref llm) = llm_arc else {
                             continue; // LLM 不可用 → 降级原文（summary 保持 None）
                         };
+                        if llm_unavailable {
+                            // 已经 fast-fail，不再调 LLM
+                            continue;
+                        }
                         match attune_core::context_compress::generate_summary(llm.as_ref(), &s.text, strategy) {
                             Ok(summary) => {
                                 s.summary = Some(summary);
@@ -366,6 +443,17 @@ pub async fn chat(
                             }
                             Err(e) => {
                                 tracing::warn!("chat: summary generation failed for chunk {}: {e}", &s.hash[..8]);
+                                // LLM unavailable 错误 → fast-fail 整批
+                                let err_msg = e.to_string();
+                                if err_msg.contains("llm unavailable")
+                                    || err_msg.contains("error sending request")
+                                    || err_msg.contains("timed out")
+                                {
+                                    tracing::warn!(
+                                        "chat: LLM unavailable, skipping summary for remaining chunks (graceful fallback to original text)"
+                                    );
+                                    llm_unavailable = true;
+                                }
                             }
                         }
                     }
@@ -548,25 +636,47 @@ pub async fn chat(
         sid_opt
     };
 
-    // 6. Build citations
+    // 6. Build citations — v0.6 Phase B fix:
+    //    透传 breadcrumb + chunk_offset 让前端 reader 可点击跳转源 chunk
+    //    fallback：当 chunker 给 chunk[0] 空 path 时，用 [title] 给个最小面包屑
     let citations: Vec<serde_json::Value> = knowledge
         .iter()
         .map(|k| {
+            let title = k.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let breadcrumb_arr = k
+                .get("breadcrumb")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let breadcrumb = if breadcrumb_arr.is_empty() && !title.is_empty() {
+                vec![serde_json::Value::String(title.clone())]
+            } else {
+                breadcrumb_arr
+            };
             serde_json::json!({
                 "item_id": k.get("item_id"),
-                "title": k.get("title"),
+                "title": title,
                 "relevance": k.get("score"),
+                "breadcrumb": breadcrumb,
+                "chunk_offset_start": k.get("chunk_offset_start"),
+                "chunk_offset_end": k.get("chunk_offset_end"),
             })
         })
         .collect();
 
+    // v0.6 Phase B fix: 解析 confidence + 剥离 marker（J5 strict prompt 要求 LLM 末尾输出）
+    let confidence = attune_core::parse_confidence(&response);
+    let response = attune_core::strip_confidence_marker(&response).to_string();
+
     // 6. Build response with optional hint when web search unavailable
+    // v0.6 Phase B fix: 透传 confidence (parsed from LLM 末尾 marker)
     let mut response_json = serde_json::json!({
         "content": response,
         "citations": citations,
         "knowledge_count": knowledge.len(),
         "session_id": session_id,
         "web_search_used": web_search_used,
+        "confidence": confidence,
         // Batch B.2: 批注加权 / 上下文压缩统计 —— token chip 展开时展示
         "weight_stats": {
             "items_total": weight_stats.items_total,
